@@ -1,0 +1,28 @@
+name: Herdi
+options:
+  bundleIdPrefix: com.dcolinmorgan
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "16.0"
+targets:
+  Herdi:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    settings:
+      base:
+        INFOPLIST_FILE: Sources/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.dcolinmorgan.herdi
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        DEVELOPMENT_TEAM: ""
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: Herdi
+        UILaunchScreen: {}
+        NSLocalNetworkUsageDescription: "Herdi discovers the relay daemon on your local network."
+        NSBonjourServices:
+          - _herdi._tcp
