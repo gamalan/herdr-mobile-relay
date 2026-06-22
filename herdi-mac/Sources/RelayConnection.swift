@@ -102,8 +102,17 @@ final class RelayConnection {
 
     private func runSSH(_ remote: String, _ args: String...) -> String {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = ["-o", "ConnectTimeout=5", "-o", "BatchMode=yes", remote] + args
+        let password = KeychainHelper.getPassword(for: remote)
+
+        if let password, FileManager.default.fileExists(atPath: "/opt/homebrew/bin/sshpass") {
+            // Use sshpass for password auth
+            process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/sshpass")
+            process.arguments = ["-p", password, "ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no", remote] + args
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = ["-o", "ConnectTimeout=5", "-o", "BatchMode=yes", remote] + args
+        }
+
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
@@ -115,15 +124,19 @@ final class RelayConnection {
         } catch { return "" }
     }
 
-    func addRemote(_ remote: String) {
+    func addRemote(_ remote: String, password: String? = nil) {
         guard !remote.isEmpty, !remotes.contains(remote) else { return }
         remotes.append(remote)
         UserDefaults.standard.set(remotes, forKey: "herdi_remotes")
+        if let password, !password.isEmpty {
+            KeychainHelper.setPassword(password, for: remote)
+        }
     }
 
     func removeRemote(_ remote: String) {
         remotes.removeAll { $0 == remote }
         UserDefaults.standard.set(remotes, forKey: "herdi_remotes")
+        KeychainHelper.deletePassword(for: remote)
     }
 
     private func readPaneForBlocked(_ agent: Agent, remote: String? = nil) {

@@ -146,6 +146,7 @@ struct SettingsPanel: View {
     let updater: Updater
     @State private var relayURL = "ws://127.0.0.1:8375"
     @State private var newRemote = ""
+    @State private var newPassword = ""
 
     var body: some View {
         ScrollView {
@@ -212,13 +213,17 @@ struct SettingsPanel: View {
                         HStack {
                             TextField("user@host", text: $newRemote)
                                 .textFieldStyle(.roundedBorder).font(.caption)
+                            SecureField("password", text: $newPassword)
+                                .textFieldStyle(.roundedBorder).font(.caption)
+                                .frame(width: 80)
                             Button("Add") {
-                                relay.addRemote(newRemote)
+                                relay.addRemote(newRemote, password: newPassword.isEmpty ? nil : newPassword)
                                 newRemote = ""
+                                newPassword = ""
                             }
                             .font(.caption).disabled(newRemote.isEmpty)
                         }
-                        Text("Requires SSH key auth (no password)")
+                        Text("Password stored in Keychain. Leave blank for key auth.")
                             .font(.caption2).foregroundStyle(.tertiary)
                     }
                     .padding(4)
