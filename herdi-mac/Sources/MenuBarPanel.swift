@@ -280,17 +280,12 @@ struct AgentRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Circle().fill(color).frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(agent.project.isEmpty ? agent.name : agent.project)
-                    .font(.body)
-                HStack(spacing: 4) {
-                    Text(agent.name).font(.caption2).foregroundStyle(.secondary)
-                    if agent.host != "local" {
-                        Text("@\(agent.host)").font(.caption2).foregroundStyle(.orange)
-                    }
-                }
-            }
+            Text(agent.project.isEmpty ? "~" : agent.project)
+                .font(.caption.monospaced()).lineLimit(1)
+            Text("·").foregroundStyle(.tertiary)
+            Text(agent.name).font(.caption).foregroundStyle(.secondary)
             Spacer()
+            Text(agent.status.rawValue).font(.caption2).foregroundStyle(color)
             if agent.status == .blocked {
                 Image(systemName: "exclamationmark.bubble.fill").foregroundStyle(.red).font(.caption)
             }
