@@ -30,7 +30,7 @@ herdr server reload-config
 ## 4. Monitor
 
 **Web app** (phone):
-Open [herdr-remote.pages.dev](https://herdr-remote.pages.dev), tap ⚙, paste your tunnel URL.
+Open [herdr-demo.pages.dev](https://herdr-demo.pages.dev), tap ⚙, paste your tunnel URL.
 
 **Menu bar app** (macOS):
 Download from [Releases](https://github.com/dcolinmorgan/herdr-remote/releases).
