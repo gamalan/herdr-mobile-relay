@@ -29,18 +29,30 @@ cp .env.example .env
 make web-deploy
 ```
 
-## 3. Use a stable relay hostname
+## 3. Use stable relay hostnames
 
-For a fixed `wss://` URL, create a named Cloudflare tunnel and install the macOS service:
+For fixed `wss://` URLs, create one named Cloudflare tunnel and one DNS hostname per computer:
 
 ```bash
 cloudflared tunnel login
-cloudflared tunnel create herdr-remote
-cloudflared tunnel route dns herdr-remote relay.yourdomain.com
-make service-install
+cloudflared tunnel create herdr-remote-mac
+cloudflared tunnel route dns herdr-remote-mac relay-mac.yourdomain.com
+
+cloudflared tunnel create herdr-remote-fedora
+cloudflared tunnel route dns herdr-remote-fedora relay-fedora.yourdomain.com
 ```
 
-Then use `wss://relay.yourdomain.com` in the web app.
+Install the background service for the current computer:
+
+```bash
+# macOS
+make service-install
+
+# Fedora/Linux
+make linux-service-install
+```
+
+Then use each computer's `wss://` hostname in the web app.
 
 ## 4. Show two computers on one page
 

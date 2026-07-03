@@ -7,7 +7,7 @@ WEB_PROJECT ?= herdr-remote
 PATH := /opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$(HOME)/.local/bin:$(PATH)
 export PATH
 
-.PHONY: help relay-install relay-run relay-plugin service-install service-uninstall service-status service-logs linux-service-install linux-service-uninstall linux-service-status linux-service-logs web-deploy web-preview mac-build ios-build
+.PHONY: help relay-install relay-run relay-plugin service-install service-uninstall service-status service-logs linux-service-install linux-service-uninstall linux-service-status linux-service-logs web-deploy web-preview
 
 help:
 	@echo "Common targets:"
@@ -60,9 +60,3 @@ web-deploy:
 
 web-preview:
 	npx wrangler pages dev web
-
-mac-build:
-	cd herdi-mac && swift build
-
-ios-build:
-	xcodebuild -project herdi-ios/Herdi.xcodeproj -scheme Herdi -destination 'generic/platform=iOS' build

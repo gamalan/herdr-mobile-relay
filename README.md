@@ -1,14 +1,26 @@
 # herdr-remote
 
-Monitor and approve [herdr](https://herdr.dev) agents from a phone, menu bar, or terminal dashboard.
+Remote control for [herdr](https://herdr.dev) agents across multiple computers.
+
+This fork is built around one simple model: each computer runs its own local relay, each relay is exposed through its own Cloudflare Tunnel hostname, and the phone web app connects to all relays directly. The browser merges the agent lists into one page, so a phone can approve agents running on a Mac and on a Fedora workstation without either computer connecting to the other.
+
+This repo no longer uses the original Telegram bot, native Herdi apps, terminal dashboard, or SSH remote fan-out. The relay only talks to local `herdr`; multi-computer support happens in the web app.
+
+## Current Model
+
+- Run one relay per computer.
+- Expose each relay with a distinct `wss://` hostname, for example `relay-mac.example.com` and `relay-fedora.example.com`.
+- Reuse the same `HERDR_RELAY_TOKEN` on multiple relays if you want one shared secret.
+- Add each relay URL to the web app Settings with a display label such as `Mac` or `Fedora`.
+- Keep the computers independent. There is no Mac-to-Fedora SSH, Fedora-to-Mac SSH, or shared Cloudflare tunnel for different local relays.
 
 ## Components
 
-- **Relay**: local Python process on port `8375`; polls local herdr.
-- **Web app**: static mobile UI in `web/`; connect it to one or more relay `ws://` or `wss://` URLs.
-- **Cloudflare tunnel**: exposes the relay without opening inbound ports.
-- **LaunchAgent service**: macOS background service that starts both the relay and a named Cloudflare tunnel.
-- **macOS menu bar app** and **terminal TUI**: optional clients for the same relay.
+- **Relay**: local Python WebSocket/HTTP service on port `8375`; polls only local `herdr`.
+- **Web app**: static mobile UI in `web/`; stores multiple relay configs in browser local storage and merges agent lists client-side.
+- **Cloudflare Tunnel**: exposes each relay without opening inbound ports. Use a separate hostname per computer.
+- **Background services**: launchd on macOS and user systemd on Linux/Fedora start both the relay and `cloudflared`.
+- **herdr plugin hook**: optional local event push from `herdr` into the local relay for faster blocked-agent updates.
 
 ## Quick Start
 
@@ -25,7 +37,7 @@ Tunnel URL: https://example.trycloudflare.com
 WebSocket:  wss://example.trycloudflare.com
 ```
 
-Open your deployed web app on your phone and enter the printed `wss://...trycloudflare.com` URL in Settings. Quick tunnels are temporary; the hostname changes when the tunnel restarts.
+Open your deployed web app on your phone and add the printed `wss://...trycloudflare.com` URL in Settings. Quick tunnels are temporary; the hostname changes when the tunnel restarts.
 
 ## Web App
 
@@ -45,26 +57,43 @@ In the app Settings:
 - **Relay URL**: `wss://...`
 - **Token**: value of `HERDR_RELAY_TOKEN` if relay auth is enabled
 
-Add one relay entry for each computer you want on the same page.
+Add one relay entry for each computer you want on the same page. The relay name is what the phone UI displays as the host badge, for example `@Mac` or `@Fedora`.
 
 ## Named Tunnel
 
-For a stable relay hostname, create a named Cloudflare tunnel and route a DNS name you control:
+For a stable relay hostname, create a named Cloudflare tunnel on each computer and route a DNS name you control:
 
 ```bash
+# On the Mac
 cloudflared tunnel login
-cloudflared tunnel create herdr-remote
-cloudflared tunnel route dns herdr-remote relay.yourdomain.com
+cloudflared tunnel create herdr-remote-mac
+cloudflared tunnel route dns herdr-remote-mac relay-mac.yourdomain.com
+
+# On Fedora
+cloudflared tunnel create herdr-remote-fedora
+cloudflared tunnel route dns herdr-remote-fedora relay-fedora.yourdomain.com
 ```
 
-Create `~/.cloudflared/config-herdr-remote.yml`:
+Create `~/.cloudflared/config-herdr-remote.yml` on each computer. Example for the Mac:
 
 ```yaml
-tunnel: herdr-remote
+tunnel: herdr-remote-mac
 credentials-file: /Users/you/.cloudflared/<TUNNEL_ID>.json
 
 ingress:
-  - hostname: relay.yourdomain.com
+  - hostname: relay-mac.yourdomain.com
+    service: http://localhost:8375
+  - service: http_status:404
+```
+
+For Fedora, use the Fedora tunnel name, credentials file, and hostname:
+
+```yaml
+tunnel: herdr-remote-fedora
+credentials-file: /home/you/.cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: relay-fedora.yourdomain.com
     service: http://localhost:8375
   - service: http_status:404
 ```
@@ -79,12 +108,13 @@ cloudflared tunnel --config ~/.cloudflared/config-herdr-remote.yml run
 Then use this in the web app:
 
 ```text
-wss://relay.yourdomain.com
+wss://relay-mac.yourdomain.com
+wss://relay-fedora.yourdomain.com
 ```
 
 ## Multiple Computers, One Page
 
-Run one relay and one Cloudflare tunnel per computer. The computers do not need to SSH into each other. The web app connects to each relay URL directly and merges the agent lists in the browser.
+Run one relay and one Cloudflare tunnel per computer. The web app connects to each relay URL directly and merges the agent lists in the browser.
 
 Use distinct public hostnames, for example:
 
@@ -178,21 +208,15 @@ make relay-run
 
 For the launchd service, set or read the token in `relay/.env`.
 
-## Optional Clients
+## herdr Plugin Hook
 
-macOS menu bar app:
-
-```bash
-cd herdi-mac
-./build.sh
-cp -r dist/Herdi.app /Applications/
-```
-
-Terminal TUI:
+The relay polls local `herdr` every few seconds. For faster blocked-agent updates, link the local plugin hook on each computer:
 
 ```bash
-uv run relay/herdr_tui.py
+make relay-plugin
 ```
+
+The plugin sends local agent-status events to the local relay over UDP on `127.0.0.1:8376`. It does not expose another network service and does not connect to other computers.
 
 ## Requirements
 
