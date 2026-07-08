@@ -253,6 +253,14 @@ const TERMINAL_HISTORY_LINES = 500;
 const CODEX_STATUS_LINE_KEY = 'herdr_show_codex_status_line';
 const DEVICE_LOCK_KEY = 'herdr_require_device_unlock';
 const DEVICE_CREDENTIAL_KEY = 'herdr_device_unlock_credential';
+const RESPONSE_KEYS = {
+  'yes, single permission': 'y',
+  'trust, always allow': 'a',
+  'no (tab to edit)': 'n',
+  'approve all pending': 'a',
+  'configure individually': 'c',
+  'exit (cancel subagents)': 'e'
+};
 const ANSI_COLORS = {
   30: '#555', 31: '#ff5f5f', 32: '#5fd75f', 33: '#ffd75f',
   34: '#5fafff', 35: '#d75fff', 36: '#5fffff', 37: '#e5e5e5',
@@ -1070,11 +1078,18 @@ function showTerminalView(paneId) {
     const opts = a.options||['yes, single permission','trust, always allow','no (tab to edit)'];
     qa.innerHTML = opts.map(o => {
       const cls = o.includes('yes')||o.includes('approve')?'btn-yes':o.includes('trust')?'btn-trust':'btn-no';
-      const arg = escapeHtml(JSON.stringify(o));
+      const key = responseKey(o);
+      if (!key) return '';
+      const arg = escapeHtml(JSON.stringify(key));
       return `<button class="${cls}" onclick='respond(${arg})'>${escapeHtml(o.split(',')[0])}</button>`;
     }).join('');
-    // Colored shortcut keys in keyboard bar
-    ak.innerHTML = `<button class="key-green" onclick="respond('yes, single permission')">y</button><button class="key-blue" onclick="respond('trust, always allow')">a</button><button class="key-red" onclick="respond('no (tab to edit)')">n</button>`;
+    ak.innerHTML = opts.map(o => {
+      const key = responseKey(o);
+      if (!key) return '';
+      const cls = o.includes('yes')||o.includes('approve')?'key-green':o.includes('trust')?'key-blue':'key-red';
+      const arg = escapeHtml(JSON.stringify(key));
+      return `<button class="${cls}" onclick='respond(${arg})'>${escapeHtml(key)}</button>`;
+    }).join('');
   } else {
     qa.innerHTML='';
     ak.innerHTML='';
@@ -1144,7 +1159,19 @@ function toggleArrows(event){
   document.getElementById('arrowPopup').classList.toggle('show');
 }
 function hideArrows(){document.getElementById('arrowPopup').classList.remove('show');}
-function respond(t){if(!activePane)return;if(!sendToActive({type:'respond',text:t}))return;document.getElementById('quickActions').innerHTML='';setTimeout(refreshPane,500);}
+function responseKey(value){
+  const key=String(value||'').trim().toLowerCase();
+  if(RESPONSE_KEYS[key])return RESPONSE_KEYS[key];
+  return key.length===1&&/^[a-z0-9]$/.test(key)?key:null;
+}
+function respond(t){
+  if(!activePane)return;
+  const key=responseKey(t);
+  if(!key)return;
+  if(!sendToActive({type:'respond',key,text:key}))return;
+  document.getElementById('quickActions').innerHTML='';
+  setTimeout(refreshPane,500);
+}
 document.addEventListener('click', hideArrows);
 
 window.addEventListener('popstate', event => {

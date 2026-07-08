@@ -33,6 +33,14 @@ LOCAL_HOST = socket.gethostname().split(".")[0] or "local"
 
 TOOL_OPTIONS = ["yes, single permission", "trust, always allow", "no (tab to edit)"]
 SUBAGENT_OPTIONS = ["approve all pending", "configure individually", "exit (cancel subagents)"]
+RESPONSE_KEYS = {
+    "yes, single permission": "y",
+    "trust, always allow": "a",
+    "no (tab to edit)": "n",
+    "approve all pending": "a",
+    "configure individually": "c",
+    "exit (cancel subagents)": "e",
+}
 CHROME_RE = re.compile(
     r"^[\s─━═_—│|◔◑◕●\s]+$"
     r"|Kiro\s[·•]"
@@ -110,6 +118,15 @@ def detect_options(text):
         return TOOL_OPTIONS
     if "approve all pending" in lower:
         return SUBAGENT_OPTIONS
+    return None
+
+
+def response_key(value):
+    key = (value or "").strip().lower()
+    if key in RESPONSE_KEYS:
+        return RESPONSE_KEYS[key]
+    if len(key) == 1 and key.isalnum():
+        return key
     return None
 
 
@@ -257,7 +274,9 @@ async def handle_client(ws):
             msg_type = msg.get("type")
             if msg_type == "respond":
                 pane_id = msg["pane_id"]
-                run_herdr("pane", "send-text", pane_id, msg["text"] + "\n")
+                key = response_key(msg.get("key") or msg.get("text"))
+                if key:
+                    run_herdr("pane", "send-text", pane_id, key)
             elif msg_type == "agent_event":
                 event_queue.put_nowait(msg)
             elif msg_type == "read_pane":
