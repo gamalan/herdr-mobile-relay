@@ -106,7 +106,7 @@ In the app Settings, add one relay entry per computer:
 
 - **Relay Name:** display label such as `Mac` or `Fedora`
 - **Relay URL:** `wss://...`
-- **Token:** value of `HERDR_RELAY_TOKEN` if relay auth is enabled
+- **Token:** value of `HERDR_RELAY_TOKEN`
 
 ## Stable Hostnames
 

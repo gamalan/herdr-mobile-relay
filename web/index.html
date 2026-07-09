@@ -174,8 +174,8 @@ body[data-view="terminal"] #statusDot, body[data-view="terminal"] #agentCount { 
     <input id="relayLabel" type="text" placeholder="Fedora" />
     <label>Relay URL</label>
     <input id="relayUrl" type="url" placeholder="wss://relay-fedora.example.com" />
-    <label style="margin-top:8px">Token (optional)</label>
-    <input id="relayToken" type="password" placeholder="shared secret" />
+    <label style="margin-top:8px">Token</label>
+    <input id="relayToken" type="password" placeholder="HERDR_RELAY_TOKEN" />
     <button onclick="addRelay()">Add Relay</button>
     <button class="secondary" onclick="connectAll()">Reconnect All</button>
     <div class="relay-list" id="relayList"></div>
