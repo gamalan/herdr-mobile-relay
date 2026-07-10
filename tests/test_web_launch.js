@@ -31,7 +31,13 @@ assert.ok(cwdField >= 0 && cwdField < nameField, 'Working Directory must appear 
 assert.match(html, /<input id="launchCwd" type="hidden" \/>/);
 assert.match(html, /id="launchDirectoryUp"[^>]*openParentLaunchDirectory/);
 assert.match(html, /id="launchDirectoryList"/);
-assert.match(html, /The folder shown above is used\. Tap a subfolder to open it\./);
+assert.match(html, /id="launchDirectoryToggle"[^>]*aria-expanded="false"/);
+assert.match(html, /\.directory-list \{ display: none;/);
+assert.match(html, /\.directory-browser\.open \.directory-list \{ display: block;/);
+assert.match(html, /onfocusout="handleLaunchDirectoryFocusOut\(event\)"/);
+assert.match(html, /The folder shown above is selected\. Tap it to browse; use ↑ or Parent folder to go back\./);
+assert.match(html, /Parent folder<\/button>/);
+assert.match(html, /This folder has no subdirectories\. It remains selected\./);
 assert.match(html, /Update and restart this computer’s relay to browse directories\./);
 assert.match(html, /Sent to the agent as its first prompt after it starts\./);
 

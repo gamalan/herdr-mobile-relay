@@ -20,6 +20,7 @@ const TERMINAL_SEPARATOR_TOKEN = '\\uE000HERDR_SEPARATOR\\uE000';
 ${html.slice(rendererStart, rendererEnd)}
 this.ansi256Color = ansi256Color;
 this.ansiToHtml = ansiToHtml;
+this.isNearWhiteAnsiColor = isNearWhiteAnsiColor;
 this.ansiLineBackground = ansiLineBackground;
 this.ansiLineBackgrounds = ansiLineBackgrounds;
 this.terminalHtml = terminalHtml;
@@ -58,5 +59,27 @@ const separateBlocks = sandbox.ansiLineBackgrounds([
   '\x1b[48;5;1mSecond block\x1b[0m',
 ]);
 assert.deepEqual(separateBlocks, ['#ff5f5f', '', '', '', '#ff5f5f']);
+
+assert.equal(sandbox.isNearWhiteAnsiColor('#fff'), true);
+assert.equal(sandbox.isNearWhiteAnsiColor('#e5e5e5'), true);
+assert.equal(sandbox.isNearWhiteAnsiColor('rgb(242,242,242)'), true);
+assert.equal(sandbox.isNearWhiteAnsiColor('rgb(220,220,180)'), false);
+
+for (const lightBackground of [
+  '\x1b[107m› Standard bright-white prompt\x1b[0m',
+  '\x1b[48;5;15m› ANSI-256 white prompt\x1b[0m',
+  '\x1b[48;2;242;242;242m› Truecolor near-white prompt\x1b[0m',
+]) {
+  const normalized = sandbox.terminalHtml(lightBackground, true);
+  assert.match(normalized, /class="ansi-line ansi-line-background" style="background-color:rgb\(61,64,64\)"/);
+  assert.doesNotMatch(normalized, /background-color:(?:#fff|rgb\(242,242,242\))/);
+}
+
+const nonCodexWhite = sandbox.terminalHtml('\x1b[107mWhite row\x1b[0m');
+assert.match(nonCodexWhite, /background-color:#fff/);
+
+const inlineWhite = sandbox.terminalHtml('Normal text \x1b[107mwhite highlight\x1b[0m', true);
+assert.match(inlineWhite, /background-color:#fff/);
+assert.doesNotMatch(inlineWhite, /ansi-line-background/);
 
 console.log('ANSI terminal renderer tests passed');

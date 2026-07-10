@@ -67,12 +67,18 @@ body[data-view="terminal"] #manageButton { display: block; }
 .form-card button, .dialog-panel button { min-height: 42px; margin-top: 10px; padding: 9px 14px; border: 0; border-radius: 7px; background: var(--green); color: #050505; font-weight: 700; cursor: pointer; }
 .form-card button:disabled, .dialog-panel button:disabled { opacity: 0.45; cursor: default; }
 .directory-browser { overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); }
-.directory-toolbar { display: flex; align-items: center; gap: 7px; padding: 7px; border-bottom: 1px solid var(--border); }
-.directory-current { min-width: 0; overflow: hidden; color: var(--text); font-family: 'SF Mono', 'Menlo', monospace; font-size: 0.68rem; text-overflow: ellipsis; white-space: nowrap; }
+.directory-toolbar { display: flex; align-items: center; gap: 7px; padding: 7px; }
+.directory-browser.open .directory-toolbar { border-bottom: 1px solid var(--border); }
 .form-card .directory-toolbar button { flex: none; min-height: 32px; margin: 0; padding: 4px 10px; background: var(--surface); color: var(--text); }
-.directory-list { max-height: 220px; overflow-y: auto; padding: 3px; }
+.form-card .directory-toolbar .directory-current { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; overflow: hidden; background: transparent; font-family: 'SF Mono', 'Menlo', monospace; font-size: 0.68rem; font-weight: 500; text-align: left; }
+.directory-current-path { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.directory-chevron { flex: none; transition: transform 0.15s ease; }
+.directory-browser.open .directory-chevron { transform: rotate(180deg); }
+.directory-list { display: none; max-height: 220px; overflow-y: auto; padding: 3px; }
+.directory-browser.open .directory-list { display: block; }
 .form-card .directory-list button { display: block; width: 100%; min-height: 36px; margin: 0; padding: 6px 9px; border-radius: 5px; background: transparent; color: var(--text); font-weight: 500; text-align: left; overflow-wrap: anywhere; }
 .form-card .directory-list button:active { background: var(--border); }
+.form-card .directory-list .directory-parent { border-bottom: 1px solid var(--border); border-radius: 0; color: var(--muted); }
 .directory-message { padding: 10px; color: var(--muted); font-size: 0.68rem; }
 .form-status { min-height: 1rem; margin-top: 8px; color: var(--muted); font-size: 0.7rem; }
 .form-status.error { color: var(--red); }
@@ -300,14 +306,17 @@ body[data-view="terminal"] #manageButton { display: block; }
     <select id="launchProfile" required onchange="updateLaunchName()"></select>
     <div class="field-label" id="launchCwdLabel">Working Directory</div>
     <input id="launchCwd" type="hidden" />
-    <div class="directory-browser" aria-labelledby="launchCwdLabel">
+    <div class="directory-browser" id="launchDirectoryBrowser" aria-labelledby="launchCwdLabel" onfocusout="handleLaunchDirectoryFocusOut(event)">
       <div class="directory-toolbar">
         <button id="launchDirectoryUp" type="button" onclick="openParentLaunchDirectory()" aria-label="Open parent directory">↑</button>
-        <div class="directory-current" id="launchDirectoryCurrent" aria-live="polite">Loading…</div>
+        <button class="directory-current" id="launchDirectoryToggle" type="button" onclick="toggleLaunchDirectoryPicker()" aria-expanded="false" aria-controls="launchDirectoryList">
+          <span class="directory-current-path" id="launchDirectoryCurrent" aria-live="polite">Loading…</span>
+          <span class="directory-chevron" aria-hidden="true">⌄</span>
+        </button>
       </div>
       <div class="directory-list" id="launchDirectoryList" aria-label="Subdirectories"></div>
     </div>
-    <div class="hint">The folder shown above is used. Tap a subfolder to open it.</div>
+    <div class="hint">The folder shown above is selected. Tap it to browse; use ↑ or Parent folder to go back.</div>
     <label for="launchName">Name</label>
     <input id="launchName" type="text" required maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,47}" placeholder="project-codex" autocomplete="off" />
     <label for="launchPrompt">Initial task <span style="font-weight:normal">(optional)</span></label>
@@ -447,6 +456,10 @@ renderCodexStatusLineSetting();
 renderNotificationSetting();
 renderDeviceVerificationSetting();
 renderRelayList();
+document.addEventListener('pointerdown', event => {
+  const browser = document.getElementById('launchDirectoryBrowser');
+  if (browser && !browser.contains(event.target)) setLaunchDirectoryOpen(false);
+});
 
 function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
@@ -1701,7 +1714,8 @@ function updateTerminalContent(content, format) {
   const shouldStickToBottom = distanceFromBottom < 48;
   const previousScrollTop = term.scrollTop;
   const contentChanged = displayContent !== lastTerminalDisplayContent;
-  if (format === 'ansi') term.innerHTML = terminalHtml(displayContent);
+  const normalizeCodexLightRows = /\bcodex\b/i.test(String(activeAgent()?.agent || ''));
+  if (format === 'ansi') term.innerHTML = terminalHtml(displayContent, normalizeCodexLightRows);
   else term.textContent = displayContent.replaceAll(TERMINAL_SEPARATOR_TOKEN, '────────');
   if (shouldStickToBottom) {
     term.scrollTop = term.scrollHeight;
@@ -1799,6 +1813,29 @@ function escapeHtml(text) {
   }[ch]));
 }
 
+const CODEX_DARK_ROW_BACKGROUND = 'rgb(61,64,64)';
+
+function ansiColorChannels(color) {
+  const value = String(color || '').trim();
+  const hex = value.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hex) {
+    const digits = hex[1].length === 3 ? [...hex[1]].map(char => char + char).join('') : hex[1];
+    return [0, 2, 4].map(offset => Number.parseInt(digits.slice(offset, offset + 2), 16));
+  }
+  const rgb = value.match(/^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/i);
+  return rgb ? rgb.slice(1).map(Number) : null;
+}
+
+function isNearWhiteAnsiColor(color) {
+  const channels = ansiColorChannels(color);
+  if (!channels) return false;
+  return Math.min(...channels) >= 220 && Math.max(...channels) - Math.min(...channels) <= 40;
+}
+
+function normalizedAnsiBackground(color, normalizeNearWhite) {
+  return normalizeNearWhite && isNearWhiteAnsiColor(color) ? CODEX_DARK_ROW_BACKGROUND : color;
+}
+
 function ansi256Color(index) {
   const value = Number(index);
   if (!Number.isInteger(value) || value < 0 || value > 255) return '';
@@ -1825,7 +1862,7 @@ function ansiStyleName(name) {
   })[name] || name;
 }
 
-function ansiToHtml(text) {
+function ansiToHtml(text, normalizeNearWhiteBackground = false) {
   let html = '', open = false, styles = {};
   const parts = text.split(/\x1b\[([0-9;]*)m/g);
   for (let i = 0; i < parts.length; i++) {
@@ -1865,12 +1902,14 @@ function ansiToHtml(text) {
         }
         if (color) {
           if (code === 38) styles.color = color;
-          else styles.backgroundColor = color;
+          else styles.backgroundColor = normalizedAnsiBackground(color, normalizeNearWhiteBackground);
           j += consumed;
         }
       }
       else if (ANSI_COLORS[code]) styles.color = ANSI_COLORS[code];
-      else if (ANSI_COLORS[code - 10]) styles.backgroundColor = ANSI_COLORS[code - 10];
+      else if (ANSI_COLORS[code - 10]) {
+        styles.backgroundColor = normalizedAnsiBackground(ANSI_COLORS[code - 10], normalizeNearWhiteBackground);
+      }
     }
     const style = Object.entries(styles).map(([k,v]) => `${ansiStyleName(k)}:${v}`).join(';');
     if (style) {
@@ -1934,17 +1973,19 @@ function ansiLineBackgrounds(lines) {
   return backgrounds;
 }
 
-function terminalHtml(text) {
+function terminalHtml(text, normalizeCodexLightRows = false) {
   const lines = restoreAgentActivityColors(text).split('\n');
   const backgrounds = ansiLineBackgrounds(lines);
   return lines.map((line, index) => {
     if (line === TERMINAL_SEPARATOR_TOKEN) {
       return '<span class="term-separator" aria-hidden="true"></span>';
     }
-    const backgroundColor = backgrounds[index];
+    const sourceBackground = backgrounds[index];
+    const normalizeRow = normalizeCodexLightRows && isNearWhiteAnsiColor(sourceBackground);
+    const backgroundColor = normalizedAnsiBackground(sourceBackground, normalizeRow);
     const backgroundClass = backgroundColor ? ' ansi-line-background' : '';
     const backgroundStyle = backgroundColor ? ` style="background-color:${backgroundColor}"` : '';
-    return `<span class="ansi-line${backgroundClass}"${backgroundStyle}>${ansiToHtml(trimAnsiLineEnd(line))}</span>`;
+    return `<span class="ansi-line${backgroundClass}"${backgroundStyle}>${ansiToHtml(trimAnsiLineEnd(line), normalizeRow)}</span>`;
   }).join('');
 }
 
@@ -2707,6 +2748,26 @@ function updateLaunchName() {
   if (nameInput) nameInput.value = suggestedLaunchName(cwd, profile);
 }
 
+function setLaunchDirectoryOpen(open) {
+  const browser = document.getElementById('launchDirectoryBrowser');
+  const toggle = document.getElementById('launchDirectoryToggle');
+  if (!browser || !toggle) return;
+  browser.classList.toggle('open', Boolean(open));
+  toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function toggleLaunchDirectoryPicker() {
+  const browser = document.getElementById('launchDirectoryBrowser');
+  setLaunchDirectoryOpen(!browser?.classList.contains('open'));
+}
+
+function handleLaunchDirectoryFocusOut(event) {
+  const browser = event.currentTarget;
+  requestAnimationFrame(() => {
+    if (!browser.contains(document.activeElement)) setLaunchDirectoryOpen(false);
+  });
+}
+
 function updateLaunchSubmitState() {
   const relayId = document.getElementById('launchRelay')?.value || '';
   const conn = connections.get(relayId);
@@ -2738,12 +2799,17 @@ function renderLaunchDirectory(recalculateName = false) {
     list.innerHTML = `<div class="directory-message">${escapeHtml(conn.directoryError)}</div>`;
   } else if (!state) {
     list.innerHTML = '<div class="directory-message">Directory browser unavailable.</div>';
-  } else if (!state.directories.length) {
-    list.innerHTML = '<div class="directory-message">No subdirectories.</div>';
   } else {
-    list.innerHTML = state.directories.map(directory => {
+    const parent = state.parent
+      ? '<button class="directory-parent" type="button" onclick="openParentLaunchDirectory()"><span aria-hidden="true">↰</span> Parent folder</button>'
+      : '';
+    const directories = state.directories.map(directory => {
       return `<button type="button" data-path="${escapeHtml(directory.path)}" onclick="openLaunchDirectory(this.dataset.path)"><span aria-hidden="true">📁</span> ${escapeHtml(directory.name)}</button>`;
     }).join('');
+    const empty = state.directories.length
+      ? ''
+      : '<div class="directory-message">This folder has no subdirectories. It remains selected.</div>';
+    list.innerHTML = parent + directories + empty;
   }
 
   const nameInput = document.getElementById('launchName');
@@ -2775,13 +2841,17 @@ async function loadLaunchDirectory(path = '') {
 }
 
 function openLaunchDirectory(path) {
+  setLaunchDirectoryOpen(true);
+  document.getElementById('launchDirectoryToggle')?.focus({preventScroll: true});
   loadLaunchDirectory(path);
 }
 
 function openParentLaunchDirectory() {
   const relayId = document.getElementById('launchRelay')?.value || '';
   const parent = connections.get(relayId)?.directoryBrowser?.parent;
-  if (parent) loadLaunchDirectory(parent);
+  if (!parent) return;
+  setLaunchDirectoryOpen(true);
+  loadLaunchDirectory(parent);
 }
 
 function renderLaunchOptions(recalculateName = false) {
