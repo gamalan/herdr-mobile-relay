@@ -13,6 +13,10 @@ Herdr Mobile Relay runs a small local relay on each computer, exposes each relay
 | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
 | <img src="images/home.jpeg" alt="Mobile home page showing Mac and Fedora agents merged into one list" width="260"> | <img src="images/terminal.jpeg" alt="Mobile terminal view for a Fedora agent with multiline input controls" width="260"> |
 
+| Start Agent                                                                                                                                                   | Activity                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| <img src="images/new%20agent.jpeg" alt="Mobile Start Agent form with computer, agent, working directory, generated name, and optional initial task" width="260"> | <img src="images/activities.jpeg" alt="Searchable mobile activity history merged across Mac and Fedora relays" width="260"> |
+
 | Settings                                                                                                        | Notifications                                                                                                     |
 | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | <img src="images/settings.jpeg" alt="Mobile settings page with Mac and Fedora relay configuration" width="260"> | <img src="images/notifications.jpg" alt="Mobile notification for a blocked Herdr agent approval" width="260"> |
