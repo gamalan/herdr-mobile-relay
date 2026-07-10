@@ -10,7 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8
+      # setup-uv ships v8.x releases but no floating v8 major tag (v7 is the
+      # newest alias), so pin the exact version.
+      - uses: astral-sh/setup-uv@v8.3.2
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
