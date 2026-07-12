@@ -44,8 +44,17 @@ schedule_auto_setup() {
     LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/herdr-mobile-relay"
     mkdir -p "$LOG_DIR"
     chmod 700 "$LOG_DIR"
-    HERDR_SOCKET_PATH="$SOCKET_PATH" nohup sh "$SCRIPT_DIR/plugin-post-install.sh" "$EXPECTED_VERSION" "$$" \
-        </dev/null >"$LOG_DIR/post-install.log" 2>&1 &
+    # herdr runs this build in a temporary staging checkout that it deletes
+    # right after the build exits, so a waiter launched from here loses that
+    # race and dies with "No such file or directory". Run a copy from the
+    # stable cache dir instead; the waiter locates the permanent plugin root
+    # through the registry, never through its own path.
+    cp "$SCRIPT_DIR/plugin-post-install.sh" "$LOG_DIR/post-install.sh"
+    chmod 700 "$LOG_DIR/post-install.sh"
+    # cd: the inherited working directory is the staging checkout, which is
+    # about to vanish; a deleted cwd makes child shells log getcwd errors.
+    (cd "$LOG_DIR" && HERDR_SOCKET_PATH="$SOCKET_PATH" nohup sh "$LOG_DIR/post-install.sh" "$EXPECTED_VERSION" "$$" \
+        </dev/null >"$LOG_DIR/post-install.log" 2>&1 &)
     echo "herdr-mobile-relay: setup will open automatically after registration." >&2
 }
 

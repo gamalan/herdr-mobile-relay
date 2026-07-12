@@ -181,7 +181,7 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
 
         self.assertFalse((root / "relay" / "herdr-plugin.toml").exists())
         self.assertIn('id = "herdr-mobile-relay.events"', manifest)
-        self.assertIn('version = "0.4.0"', manifest)
+        self.assertIn('version = "0.4.1"', manifest)
         self.assertIn('id = "setup"', manifest)
         self.assertIn('command = "herdr-mobile-relay.events.setup"', manifest)
         self.assertIn('command = ["bash", "relay/open-plugin-pane.sh", "setup"]', manifest)
@@ -304,11 +304,17 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
                         break
                     time.sleep(0.01)
                 nohup_args = args_file.read_text()
+            # The waiter must run from a copy outside the checkout: herdr
+            # deletes the staging checkout right after the build exits.
+            waiter_copy = temp / ".cache" / "herdr-mobile-relay" / "post-install.sh"
+            waiter_copy_exists = waiter_copy.exists()
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("setup will open automatically", result.stderr)
-        self.assertIn("plugin-post-install.sh", nohup_args)
-        self.assertIn("0.4.0", nohup_args)
+        self.assertIn(".cache/herdr-mobile-relay/post-install.sh", nohup_args)
+        self.assertNotIn(str(root), nohup_args)
+        self.assertTrue(waiter_copy_exists)
+        self.assertIn("0.4.1", nohup_args)
 
     def test_post_install_opens_already_matching_registered_version(self):
         root = RELAY_PATH.parents[1]
