@@ -598,6 +598,85 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
         self.assertTrue(quick.stdout.rstrip().endswith("quick"))
         self.assertTrue(stable.stdout.rstrip().endswith("stable"))
 
+    def test_relay_health_check_retries_until_detailed_health_is_ready(self):
+        root = RELAY_PATH.parents[1]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            count_file = temp / "curl-count"
+            fake_curl = temp / "curl"
+            fake_curl.write_text(
+                "#!/bin/bash\n"
+                "count=0\n"
+                "[ ! -f \"$COUNT_FILE\" ] || count=$(<\"$COUNT_FILE\")\n"
+                "count=$((count + 1))\n"
+                "printf '%s\\n' \"$count\" > \"$COUNT_FILE\"\n"
+                "[ \"$count\" -ge 3 ] || exit 22\n"
+                "printf '%s\\n' '{\"status\": \"ok\", \"version\": \"abc1234\", \"protocol\": 1}'\n"
+            )
+            fake_curl.chmod(0o700)
+            env = os.environ.copy()
+            env.update({
+                "COUNT_FILE": str(count_file),
+                "PATH": f"{temp}:/usr/bin:/bin",
+            })
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    '. "$1"; wait_for_relay_health 8399 3 0',
+                    "bash",
+                    str(root / "relay" / "common.sh"),
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            call_count = count_file.read_text().strip()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(call_count, "3")
+        self.assertEqual(
+            result.stdout.strip(),
+            '{"status": "ok", "version": "abc1234", "protocol": 1}',
+        )
+
+    def test_relay_health_check_rejects_incomplete_payload(self):
+        root = RELAY_PATH.parents[1]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            fake_curl = temp / "curl"
+            fake_curl.write_text("#!/bin/sh\nprintf '%s\\n' '{\"status\": \"ok\"}'\n")
+            fake_curl.chmod(0o700)
+            env = os.environ.copy()
+            env["PATH"] = f"{temp}:/usr/bin:/bin"
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    '. "$1"; wait_for_relay_health 8399 1 0',
+                    "bash",
+                    str(root / "relay" / "common.sh"),
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_service_installers_require_relay_health(self):
+        root = RELAY_PATH.parents[1]
+        macos = (root / "relay" / "install-service.sh").read_text()
+        linux = (root / "relay" / "install-systemd-user-service.sh").read_text()
+
+        self.assertIn('wait_for_relay_health "$PORT"', macos)
+        self.assertIn('wait_for_relay_health "$PORT"', linux)
+        self.assertIn("launchctl print", macos)
+        self.assertIn("journalctl --user", linux)
+
     def test_terminal_launcher_uses_only_recognized_terminals(self):
         root = RELAY_PATH.parents[1]
         launcher = root / "relay" / "plugin-open-terminal.sh"

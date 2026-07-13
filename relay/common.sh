@@ -154,6 +154,42 @@ load_relay_env() {
     set +a
 }
 
+wait_for_relay_health() {
+    local port="${1:-8375}"
+    local attempts="${2:-15}"
+    local delay="${3:-1}"
+    local health
+    local attempt
+
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "curl is required to verify relay health." >&2
+        return 1
+    fi
+
+    case "$attempts" in
+        ""|*[!0-9]*|0)
+            echo "Health-check attempts must be a positive integer." >&2
+            return 1
+            ;;
+    esac
+
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        if health="$(curl -fsS --max-time 2 "http://127.0.0.1:$port/healthz" 2>/dev/null)"; then
+            case "$health" in
+                *'"status": "ok"'*'"version":'*'"protocol":'*)
+                    printf '%s\n' "$health"
+                    return 0
+                    ;;
+            esac
+        fi
+        if [ "$attempt" -lt "$attempts" ]; then
+            sleep "$delay"
+        fi
+    done
+
+    return 1
+}
+
 host_label() {
     hostname -s 2>/dev/null || hostname 2>/dev/null || echo relay
 }

@@ -22,8 +22,8 @@ if ! "$SCRIPT_DIR/setup.sh" --install-missing; then
 fi
 if ! "$SCRIPT_DIR/service.sh" install; then
     echo ""
-    echo "The background service was not installed. Follow the Stable Hostnames"
-    echo "section in the README, then run this action again."
+    echo "The background service could not be installed or did not become healthy."
+    echo "Review the diagnostic commands above, then run this action again."
     pause_before_close
     exit 1
 fi

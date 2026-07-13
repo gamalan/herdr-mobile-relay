@@ -73,3 +73,14 @@ echo "Installed and started $LABEL"
 echo "Unit: $UNIT_FILE"
 echo "Env:  $ENV_FILE"
 echo "Logs: journalctl --user -u $LABEL -f"
+
+PORT="${HERDR_RELAY_PORT:-8375}"
+echo "Waiting for relay health on 127.0.0.1:$PORT..."
+if ! HEALTH="$(wait_for_relay_health "$PORT")"; then
+    echo "Relay service was installed, but it did not become healthy."
+    echo "Inspect it with:"
+    echo "  systemctl --user status $LABEL --no-pager"
+    echo "  journalctl --user -u $LABEL -n 80 --no-pager"
+    exit 1
+fi
+echo "Relay health: $HEALTH"

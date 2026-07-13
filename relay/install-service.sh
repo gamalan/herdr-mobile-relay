@@ -74,3 +74,14 @@ echo "Installed and started $LABEL"
 echo "Plist: $PLIST"
 echo "Env:   $ENV_FILE"
 echo "Logs:  $LOG_DIR/service.log and $LOG_DIR/service.err"
+
+PORT="${HERDR_RELAY_PORT:-8375}"
+echo "Waiting for relay health on 127.0.0.1:$PORT..."
+if ! HEALTH="$(wait_for_relay_health "$PORT")"; then
+    echo "Relay service was installed, but it did not become healthy."
+    echo "Inspect it with:"
+    echo "  launchctl print gui/$(id -u)/$LABEL"
+    echo "  tail -n 80 '$LOG_DIR/service.log' '$LOG_DIR/service.err'"
+    exit 1
+fi
+echo "Relay health: $HEALTH"
