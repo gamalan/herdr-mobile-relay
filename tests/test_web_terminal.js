@@ -27,6 +27,7 @@ this.ansiLineBackgroundIndent = ansiLineBackgroundIndent;
 this.ansiLineBackgroundStyle = ansiLineBackgroundStyle;
 this.ansiLineBackgrounds = ansiLineBackgrounds;
 this.terminalHtml = terminalHtml;
+this.lastCompletedResponse = lastCompletedResponse;
 `, sandbox);
 
 assert.equal(sandbox.ansi256Color(6), '#1abc9c');
@@ -145,6 +146,35 @@ assert.match(nonCodexWhite, /background-color:#fff/);
 const inlineWhite = sandbox.terminalHtml('Normal text \x1b[107mwhite highlight\x1b[0m', true);
 assert.match(inlineWhite, /background-color:#fff/);
 assert.doesNotMatch(inlineWhite, /ansi-line-background/);
+
+const codexResponse = sandbox.lastCompletedResponse([
+  '• Earlier answer.',
+  '─ Worked for 2s ─',
+  '',
+  '› New question',
+  '',
+  '• Latest answer.',
+  '  - First detail',
+  '  - Second detail',
+  '',
+  '─ Worked for 8m 05s ─',
+  '',
+  '› Next question',
+].join('\n'));
+assert.equal(codexResponse, 'Latest answer.\n- First detail\n- Second detail');
+
+const claudeResponse = sandbox.lastCompletedResponse([
+  '● Read 2 files',
+  '',
+  '● The implementation is ready.',
+  '  It works on both agents.',
+  '',
+  '\x1b[2m✻ Crunched for 1m 49s\x1b[0m',
+  '❯ ',
+].join('\n'));
+assert.equal(claudeResponse, 'The implementation is ready.\nIt works on both agents.');
+assert.equal(sandbox.lastCompletedResponse('● Still working\n'), '');
+assert.match(html, /aria-label="Copy last agent response"/);
 
 // DOM writes in the terminal view must be skipped when nothing changed:
 // unconditional rebuilds at polling frequency flicker the approval buttons

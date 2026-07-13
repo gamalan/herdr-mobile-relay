@@ -373,6 +373,7 @@ body[data-view="terminal"] #manageButton { display: block; }
   <div class="term-keys">
     <button onclick="cancelPrompt()">Esc</button>
     <button onclick="sendKey('Tab')">Tab</button>
+    <button type="button" onclick="copyLastResponse()" aria-label="Copy last agent response">Copy</button>
     <span class="spacer"></span>
     <div class="arrow-toggle">
       <button onclick="toggleArrows(event)" aria-label="Arrow keys">⌨↕</button>
@@ -1964,6 +1965,43 @@ function stripAnsi(text) {
   return String(text ?? '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
 }
 
+function isAgentTurnDurationLine(line) {
+  const clean = stripAnsi(line).replaceAll(TERMINAL_SEPARATOR_TOKEN, '').trim();
+  return /^[^\p{L}\p{N}]*\p{L}+(?:ed|ing)\s+for\s+(?:\d+h\s*)?(?:\d+m\s*)?\d+s\b/iu.test(clean);
+}
+
+function lastCompletedResponse(content) {
+  const lines = stripAnsi(content)
+    .replace(/\r/g, '')
+    .split('\n')
+    .map(line => line.replaceAll(TERMINAL_SEPARATOR_TOKEN, '').replace(/[ \t]+$/g, ''));
+  let end = -1;
+  for (let index = lines.length - 1; index >= 0; index--) {
+    if (!isAgentTurnDurationLine(lines[index])) continue;
+    end = index;
+    break;
+  }
+  if (end < 0) return '';
+
+  let start = -1;
+  for (let index = end - 1; index >= 0; index--) {
+    if (/^\s*[•●]\s+\S/.test(lines[index])) {
+      start = index;
+      break;
+    }
+    if (isAgentTurnDurationLine(lines[index])) break;
+  }
+  if (start < 0) return '';
+
+  const response = lines.slice(start, end);
+  response[0] = response[0].replace(/^\s*[•●]\s+/, '');
+  for (let index = 1; index < response.length; index++) {
+    response[index] = response[index].replace(/^ {2}/, '');
+  }
+  while (response.length && !response[response.length - 1].trim()) response.pop();
+  return response.join('\n').trim();
+}
+
 function escapeHtml(text) {
   return String(text ?? '').replace(/[&<>"']/g, ch => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -3372,6 +3410,35 @@ function handleComposerKeyDown(event){
   submitPrompt();
 }
 function cancelPrompt(){lastInsertedBackspaces=0;sendKeys(['Escape'],'Cancelled prompt');}
+async function copyLastResponse(){
+  const response=lastCompletedResponse(lastTerminalDisplayContent);
+  if(!response){
+    showToast('No completed response is visible yet.',true);
+    return;
+  }
+  try{
+    await writeClipboardText(response);
+    showToast('Last response copied.');
+  }catch(_error){
+    showToast('Clipboard access failed. Check browser permissions.',true);
+  }
+}
+async function writeClipboardText(text){
+  if(navigator.clipboard&&typeof navigator.clipboard.writeText==='function'){
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea=document.createElement('textarea');
+  textarea.value=text;
+  textarea.setAttribute('readonly','');
+  textarea.style.position='fixed';
+  textarea.style.opacity='0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied=document.execCommand('copy');
+  textarea.remove();
+  if(!copied)throw new Error('Clipboard API unavailable');
+}
 function clearPromptText(){
   const i=document.getElementById('termInput');
   lastInsertedBackspaces=0;

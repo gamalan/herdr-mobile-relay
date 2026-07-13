@@ -55,7 +55,7 @@ Forked from [dcolinmorgan/herdr-remote](https://github.com/dcolinmorgan/herdr-re
 - **Multi-computer phone UI:** one static web app connects to multiple independent relays and merges Mac, Fedora, or other hosts into one agent list.
 - **Per-machine isolation:** each computer runs only its own local relay and `herdr` CLI calls; relays do not SSH into each other or share state.
 - **PWA notifications:** installed phones receive Web Push notifications when an agent blocks, including Approve once and Deny actions; optional completion alerts can also open the finished agent directly.
-- **Mobile terminal composer:** terminal view has a compact phone-first composer, quick terminal keys, inline approval actions, themes, font sizing, and a jump-to-bottom affordance.
+- **Mobile terminal composer:** terminal view has a compact phone-first composer, quick terminal keys, a phone-local Copy response button, inline approval actions, themes, font sizing, and a jump-to-bottom affordance.
 - **Real approval handling:** blocked cards parse prompt text and approval options, then map visible choices back to the correct Herdr key actions for Codex and Claude Code.
 - **Confirmed controls and activity:** command acknowledgements report failures explicitly, approvals wait for an observed state change, and a bounded per-relay activity history is merged on the phone.
 - **Activity-aware home ordering:** agents most recently changed on their computer appear first within each status section, including activity initiated outside the phone app.
