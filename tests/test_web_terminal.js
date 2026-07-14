@@ -74,6 +74,23 @@ assert.match(
 const claudeBulletEmphasis = sandbox.terminalHtml('• \x1b[1mImportant emphasis.\x1b[0m\n', false, true);
 assert.doesNotMatch(claudeBulletEmphasis, /color:rgb\(56,162,223\)/);
 
+// Claude emits question prompts as black truecolor text even though the phone
+// terminal is always dark. Restore the terminal foreground only on rows that
+// do not carry their own background; black-on-light prompts keep their contrast.
+const claudeQuestion = sandbox.terminalHtml(
+  '\x1b[1;38;2;0;0;0mWhich phone environments should be included?\x1b[0m',
+  false,
+  true
+);
+assert.match(claudeQuestion, /color:var\(--terminal-text\)[^>]*>Which phone environments/);
+const claudeLightPrompt = sandbox.terminalHtml(
+  '\x1b[38;2;0;0;0;48;2;240;240;240mBlack text on a light row\x1b[0m',
+  false,
+  true
+);
+assert.match(claudeLightPrompt, /color:rgb\(0,0,0\)/);
+assert.doesNotMatch(claudeLightPrompt, /color:var\(--terminal-text\)/);
+
 const prompt = sandbox.terminalHtml([
   '\x1b[48;2;61;64;64m› First prompt paragraph   \x1b[0m',
   '\r',
@@ -175,6 +192,11 @@ const claudeResponse = sandbox.lastCompletedResponse([
 assert.equal(claudeResponse, 'The implementation is ready.\nIt works on both agents.');
 assert.equal(sandbox.lastCompletedResponse('● Still working\n'), '');
 assert.match(html, /aria-label="Copy last agent response"/);
+assert.match(
+  html,
+  /error\.data && error\.data\.interaction[\s\S]*?applyQuestionInteraction\(agent, error\.data\.interaction, true\)/,
+  'a partially applied question command must rebuild its draft from Claude',
+);
 
 // DOM writes in the terminal view must be skipped when nothing changed:
 // unconditional rebuilds at polling frequency flicker the approval buttons
@@ -245,6 +267,7 @@ function agentStatusGroup(agent) { return agent && agent.status === 'blocked' ? 
 function agentUpdatedAt(agent) { return Number(agent && agent.updated_at || 0); }
 ${html.slice(mergeStart, mergeEnd)}
 this.mergeAgentList = mergeAgentList;
+this.mergePaneContentInteraction = mergePaneContentInteraction;
 this.setAgents = value => { agents = value; };
 this.respondingPaneIds = respondingPaneIds;
 `, mergeSandbox);
@@ -269,6 +292,89 @@ mergeSandbox.setAgents([blockedSnapshot]);
 mergeSandbox.respondingPaneIds.add(blockedSnapshot.pane_id);
 const phoneResponse = mergeSandbox.mergeAgentList('relay', [workingSnapshot])[0];
 assert.equal(phoneResponse.status, 'working');
+
+// Missing form markup is not evidence that a blocked question ended: Claude
+// redraws the TUI in several writes. Preserve the overlay until stabilized
+// agent status confirms the transition, exactly like approval buttons.
+const structuredQuestion = {id: 'question-1', question: 'Choose scope'};
+const blockedQuestionAgent = {
+  status: 'blocked',
+  interaction: structuredQuestion,
+  question_layout: true,
+};
+assert.equal(
+  mergeSandbox.mergePaneContentInteraction(blockedQuestionAgent, {
+    interaction: null,
+    question_layout: false,
+  }),
+  false
+);
+assert.equal(blockedQuestionAgent.interaction, structuredQuestion);
+assert.equal(
+  mergeSandbox.mergePaneContentInteraction(blockedQuestionAgent, {
+    interaction: null,
+    question_layout: false,
+  }),
+  false
+);
+assert.equal(blockedQuestionAgent.interaction, structuredQuestion);
+assert.equal(
+  mergeSandbox.mergePaneContentInteraction(blockedQuestionAgent, {
+    interaction: {...structuredQuestion},
+    question_layout: true,
+  }),
+  false
+);
+blockedQuestionAgent.status = 'working';
+assert.equal(
+  mergeSandbox.mergePaneContentInteraction(blockedQuestionAgent, {
+    interaction: {...structuredQuestion},
+    question_layout: true,
+  }),
+  true
+);
+assert.equal(blockedQuestionAgent.status, 'blocked');
+blockedQuestionAgent.status = 'working';
+assert.equal(
+  mergeSandbox.mergePaneContentInteraction(blockedQuestionAgent, {
+    interaction: null,
+    question_layout: false,
+  }),
+  true
+);
+assert.equal(blockedQuestionAgent.interaction, null);
+assert.equal(blockedQuestionAgent.question_layout, false);
+
+const retainedQuestion = {
+  relay_id: 'relay',
+  pane_id: 'relay::w1:p2',
+  status: 'blocked',
+  interaction: structuredQuestion,
+  question_layout: true,
+};
+mergeSandbox.setAgents([retainedQuestion]);
+const partialBlockedEvent = mergeSandbox.mergeAgentList('relay', [{
+  relay_id: 'relay',
+  pane_id: retainedQuestion.pane_id,
+  status: 'blocked',
+  interaction: null,
+  question_layout: false,
+}])[0];
+assert.equal(partialBlockedEvent.interaction.id, 'question-1');
+assert.equal(partialBlockedEvent.question_layout, true);
+mergeSandbox.setAgents([partialBlockedEvent]);
+const firstQuestionMiss = mergeSandbox.mergeAgentList('relay', [
+  {relay_id: 'relay', pane_id: retainedQuestion.pane_id, status: 'working'},
+])[0];
+assert.equal(firstQuestionMiss.status, 'blocked');
+assert.equal(firstQuestionMiss.interaction.id, 'question-1');
+mergeSandbox.setAgents([firstQuestionMiss]);
+const confirmedQuestionExit = mergeSandbox.mergeAgentList('relay', [
+  {relay_id: 'relay', pane_id: retainedQuestion.pane_id, status: 'working'},
+])[0];
+assert.equal(confirmedQuestionExit.status, 'working');
+assert.equal(confirmedQuestionExit.interaction, undefined);
+assert.equal(confirmedQuestionExit.question_layout, undefined);
 
 // --- Behavioral: the quick-actions guard must keep identical button DOM
 // untouched, yet restore has-quick-actions after terminal navigation strips
@@ -298,10 +404,13 @@ function fakeElement() {
 const qaEl = fakeElement();
 const viewEl = fakeElement();
 let heightCalls = 0;
+let qaInteraction = null;
 const qaSandbox = {
   document: {getElementById: (id) => (id === 'quickActions' ? qaEl : viewEl)},
   nextBlockedAgent: () => null,
   agentStatusGroup: () => 'blocked',
+  questionInteraction: () => qaInteraction,
+  questionFormHtml: () => '<form class="question-form">Question form</form>',
   respondingPaneIds: new Set(),
   approvalOptions: () => ['yes', 'always', 'no'],
   approvalButtonClass: () => 'btn',
@@ -343,6 +452,139 @@ assert.ok(!viewEl.classes.has('has-quick-actions'));
 qaSandbox.renderTerminalActions(blockedAgent);
 assert.equal(qaEl.htmlWrites, 3);
 assert.ok(viewEl.classes.has('has-quick-actions'));
+
+// The same no-rebuild and class-restoration guarantees apply to the question
+// overlay, not only positional approval buttons.
+qaInteraction = {id: 'question-1'};
+qaSandbox.renderTerminalActions(blockedAgent);
+const questionOverlayWrites = qaEl.htmlWrites;
+assert.ok(viewEl.classes.has('has-question'));
+assert.match(qaEl.innerHTML, /question-form/);
+qaSandbox.renderTerminalActions(blockedAgent);
+assert.equal(qaEl.htmlWrites, questionOverlayWrites, 'identical question poll must not rebuild the overlay');
+viewEl.classList.remove('has-quick-actions', 'has-question');
+qaSandbox.renderTerminalActions(blockedAgent);
+assert.ok(viewEl.classes.has('has-quick-actions'));
+assert.ok(viewEl.classes.has('has-question'));
+assert.equal(qaEl.htmlWrites, questionOverlayWrites, 'question re-entry must restore classes without rebuilding');
+
+// --- Behavioral: Claude questions are rendered as a staged semantic form.
+// Toggling checkboxes changes only the local draft; submission is handled by
+// the separate protocol command after the user presses Submit.
+const questionStart = html.indexOf('function questionInteraction');
+const questionEnd = html.indexOf('function render()', questionStart);
+assert.ok(questionStart >= 0 && questionEnd > questionStart, 'question helpers not found');
+const questionAgent = {
+  pane_id: 'r::w1:p2',
+  interaction: {
+    id: 'question-1',
+    kind: 'multi_select',
+    question: 'Which improvements should be included?',
+    options: [
+      {index: 0, label: 'Remove duplicate embed', description: 'Prevents duplicate reloads.', selected: true},
+      {index: 1, label: 'Harden subscribe races', description: '', selected: false},
+    ],
+    other: {selected: false, text: ''},
+    submit_label: 'Submit',
+    can_chat: true,
+    can_go_back: true,
+  },
+};
+const questionElements = {
+  questionSubmitButton: {disabled: false},
+  questionOtherToggle: {checked: false},
+  questionOtherInput: {value: ''},
+  quickActions: {dataset: {}},
+};
+const questionSandbox = {
+  questionDrafts: new Map(),
+  respondingPaneIds: new Set(),
+  activeAgent: () => questionAgent,
+  normalizeInlineText: value => String(value || '').trim(),
+  escapeHtml: value => String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;'),
+  document: {getElementById: id => questionElements[id] || null},
+};
+vm.runInNewContext(`
+${html.slice(questionStart, questionEnd)}
+this.questionInteraction = questionInteraction;
+this.questionDraftFor = questionDraftFor;
+this.questionFormHtml = questionFormHtml;
+this.questionSubmitAllowed = questionSubmitAllowed;
+this.updateQuestionOption = updateQuestionOption;
+this.updateQuestionOtherSelected = updateQuestionOtherSelected;
+this.updateQuestionOtherText = updateQuestionOtherText;
+`, questionSandbox);
+
+const questionForm = questionSandbox.questionFormHtml(questionAgent);
+assert.match(questionForm, /<form class="question-form"/);
+assert.match(questionForm, /<fieldset/);
+assert.match(questionForm, /type="checkbox"[^>]*value="0" checked/);
+assert.match(questionForm, /Prevents duplicate reloads\./);
+assert.match(questionForm, /Chat about this/);
+assert.match(questionForm, /class="question-back" type="button" onclick="navigateQuestionPrevious\(\)"/);
+questionSandbox.respondingPaneIds.add(questionAgent.pane_id);
+assert.match(
+  questionSandbox.questionFormHtml(questionAgent),
+  /class="question-back"[^>]* disabled/,
+  'Previous must lock while a question command is in flight',
+);
+questionSandbox.respondingPaneIds.clear();
+questionSandbox.updateQuestionOption(1, true);
+let stagedDraft = questionSandbox.questionDraftFor(questionAgent);
+assert.deepEqual([...stagedDraft.selected], [0, 1]);
+questionSandbox.updateQuestionOtherText('Back-port all changes');
+stagedDraft = questionSandbox.questionDraftFor(questionAgent);
+assert.equal(stagedDraft.otherSelected, true);
+assert.equal(stagedDraft.otherText, 'Back-port all changes');
+
+const firstQuestionInteraction = questionAgent.interaction;
+questionAgent.interaction = {
+  ...firstQuestionInteraction,
+  id: 'question-2',
+  question: 'Which devices should be included?',
+  can_go_back: true,
+};
+questionSandbox.questionDraftFor(questionAgent);
+questionAgent.interaction = firstQuestionInteraction;
+stagedDraft = questionSandbox.questionDraftFor(questionAgent);
+assert.deepEqual([...stagedDraft.selected], [0, 1], 'returning must restore the prior draft');
+assert.equal(stagedDraft.otherText, 'Back-port all changes');
+
+// Codex Plan-mode questions use the same overlay, with a valid empty
+// "None of the above" choice and an optional notes field.
+questionAgent.interaction = {
+  id: 'codex-question-1',
+  kind: 'single_select',
+  question: 'Where should the adapter boundary sit?',
+  options: [
+    {index: 0, label: 'Domain port', description: 'Transport-agnostic contracts.', selected: false},
+    {index: 1, label: 'Protocol boundary', description: 'Keep relay-shaped logic.', selected: false},
+  ],
+  other: {
+    selected: false,
+    text: '',
+    label: 'None of the above',
+    placeholder: 'Optional notes',
+    allow_empty: true,
+  },
+  submit_label: 'Next',
+  can_chat: false,
+  can_go_back: false,
+};
+const codexQuestionForm = questionSandbox.questionFormHtml(questionAgent);
+assert.match(codexQuestionForm, /type="radio"[^>]*value="0"/);
+assert.match(codexQuestionForm, /None of the above/);
+assert.match(codexQuestionForm, /placeholder="Optional notes"/);
+assert.match(codexQuestionForm, />Next<\/button>/);
+assert.doesNotMatch(codexQuestionForm, /Chat about this/);
+questionSandbox.updateQuestionOtherSelected(true);
+const codexDraft = questionSandbox.questionDraftFor(questionAgent);
+assert.equal(codexDraft.otherSelected, true);
+assert.equal(
+  questionSandbox.questionSubmitAllowed(questionAgent.interaction, codexDraft),
+  true,
+  'Codex None of the above must be valid without notes',
+);
 
 // --- Behavioral: the composer must lock while the active agent waits for
 // approval (free text is meaningless against an approval menu) and unlock

@@ -179,6 +179,7 @@ EOF
 
 new_case() {
     CASE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/herdr-stable-test.XXXXXX")"
+    CASE_DIR="$(cd "$CASE_DIR" && pwd -P)"
     CASES="$CASES $CASE_DIR"
     HOME="$CASE_DIR/home"
     BIN="$HOME/.local/bin"

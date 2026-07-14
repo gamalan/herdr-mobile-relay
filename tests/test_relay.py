@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import importlib.util
 import json
 import os
@@ -54,6 +55,50 @@ class FakeRequest:
         self.headers = FakeHeaders(headers)
 
 
+MULTI_QUESTION_VIEW = """
+Improvements  ✓ Submit →
+Which further improvements should be included?
+❯ 1. [✓] Remove duplicate embed
+PJN_CarePlanTimeline.cmp embeds the updater twice.
+2. [ ] Harden aura subscribe races
+Store the subscribe promise synchronously.
+3. [✓] Extend Case watch list
+Add the program developer and record type fields.
+4. [ ] Refresh old parent on reparent
+Publish for the old care plan too.
+5. [ ] Type something.
+Submit
+6. Chat about this
+Enter to select · ↑/↓ to navigate · Esc to cancel
+"""
+
+CODEX_QUESTION_VIEW = """
+\x1b[48;2;240;240;240m  \x1b[2mQuestion 1/3 (3 unanswered)
+\x1b[48;2;240;240;240m  \x1b[38;5;6mWhere should the reusable adapter boundary sit?
+\x1b[48;2;240;240;240m
+\x1b[48;2;240;240;240m  \x1b[1m› 1. Domain port (Recommended)  Define transport-agnostic contracts.
+\x1b[48;2;240;240;240m    2. Protocol boundary           Keep domain logic relay-shaped.
+\x1b[48;2;240;240;240m    3. Workflow adapter            Encapsulate the full workflow.
+\x1b[48;2;240;240;240m    4. None of the above           Optionally, add details in notes (tab).
+\x1b[48;2;240;240;240m
+\x1b[48;2;240;240;240m  tab to add notes | enter to submit answer | ←/→ to navigate questions
+"""
+
+
+def write_service_env(home, relay_env):
+    if os.uname().sysname == "Darwin":
+        service_file = home / "Library" / "LaunchAgents" / "com.herdr-mobile-relay.service.plist"
+        service_file.parent.mkdir(parents=True)
+        service_file.write_text(
+            "<key>HERDR_RELAY_ENV</key>\n"
+            f"<string>{relay_env}</string>\n"
+        )
+        return
+    service_file = home / ".config" / "systemd" / "user" / "herdr-mobile-relay.service"
+    service_file.parent.mkdir(parents=True)
+    service_file.write_text(f"Environment=HERDR_RELAY_ENV={relay_env}\n")
+
+
 class ClaudeHistoryIsolationMixin:
     """Point history persistence at a per-test directory so tests never touch
     the real cache and never leak state into each other."""
@@ -72,12 +117,183 @@ class ClaudeHistoryIsolationMixin:
 
 
 class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
-    def test_protocol_v1_is_the_unversioned_positional_baseline(self):
-        self.assertEqual(relay.PROTOCOL_VERSION, 1)
+    def test_protocol_v2_keeps_v1_as_the_unversioned_baseline(self):
+        self.assertEqual(relay.PROTOCOL_VERSION, 2)
         self.assertEqual(relay.client_protocol_version({}), 1)
-        self.assertTrue(relay.client_protocol_matches({}))
-        self.assertFalse(relay.client_protocol_matches({"protocol": 2}))
+        self.assertFalse(relay.client_protocol_matches({}))
+        self.assertTrue(relay.client_protocol_matches({"protocol": 2}))
         self.assertFalse(relay.client_protocol_matches({"protocol": True}))
+
+    def test_parses_claude_multi_select_with_descriptions_and_other(self):
+        interaction = relay.parse_claude_question(MULTI_QUESTION_VIEW)
+
+        self.assertEqual(interaction["kind"], "multi_select")
+        self.assertEqual(interaction["question"], "Which further improvements should be included?")
+        self.assertEqual(len(interaction["options"]), 4)
+        self.assertTrue(interaction["options"][0]["selected"])
+        self.assertEqual(
+            interaction["options"][1]["description"],
+            "Store the subscribe promise synchronously.",
+        )
+        self.assertEqual(interaction["other"], {"selected": False, "text": ""})
+        self.assertEqual(interaction["submit_label"], "Submit")
+        self.assertTrue(interaction["can_chat"])
+        self.assertEqual(interaction["_focus"], ("option", 0))
+
+    def test_parses_codex_plan_question_with_descriptions_and_navigation(self):
+        interaction = relay.parse_codex_question(CODEX_QUESTION_VIEW)
+
+        self.assertEqual(interaction["kind"], "single_select")
+        self.assertEqual(
+            interaction["question"],
+            "Where should the reusable adapter boundary sit?",
+        )
+        self.assertEqual(
+            [item["label"] for item in interaction["options"]],
+            ["Domain port (Recommended)", "Protocol boundary", "Workflow adapter"],
+        )
+        self.assertEqual(
+            interaction["options"][0]["description"],
+            "Define transport-agnostic contracts.",
+        )
+        self.assertEqual(interaction["submit_label"], "Next")
+        self.assertFalse(interaction["can_chat"])
+        self.assertFalse(interaction["_can_go_back"])
+        self.assertEqual(interaction["_focus"], ("option", 0))
+        self.assertEqual(interaction["_agent"], "codex")
+        self.assertEqual(interaction["other"]["label"], "None of the above")
+        self.assertEqual(interaction["other"]["placeholder"], "Optional notes")
+        self.assertTrue(interaction["other"]["allow_empty"])
+        self.assertTrue(relay.question_layout_hint(CODEX_QUESTION_VIEW))
+        self.assertEqual(
+            relay.parse_question(CODEX_QUESTION_VIEW, "codex")["id"],
+            interaction["id"],
+        )
+
+    def test_codex_question_exposes_previous_and_restores_custom_notes(self):
+        answered = (
+            CODEX_QUESTION_VIEW
+            .replace("Question 1/3 (3 unanswered)", "Question 2/3 (2 unanswered)")
+            .replace("\x1b[38;5;6mWhere", "Where")
+            .replace("› 1. Domain", "  1. Domain")
+            .replace("    4. None", "  › 4. None")
+            .replace(
+                "  tab to add notes",
+                "  › Preserve only the public contract\n  tab or esc to clear notes",
+            )
+        )
+
+        interaction = relay.parse_codex_question(answered)
+
+        self.assertTrue(interaction["_can_go_back"])
+        self.assertTrue(relay.public_question_interaction(interaction)["can_go_back"])
+        self.assertTrue(interaction["_notes_active"])
+        self.assertTrue(interaction["other"]["selected"])
+        self.assertEqual(
+            interaction["other"]["text"], "Preserve only the public contract"
+        )
+        self.assertEqual(interaction["_focus"], ("option", 3))
+
+    def test_parses_narrow_codex_option_table_without_losing_wrapped_labels(self):
+        narrow = """
+Question 1/3 (3 unanswered)
+Where should the adapter boundary sit?
+
+› 1. Domain port       Define
+     (Recommended)     transport-agnostic
+  2. Protocol          Keep domain
+     boundary          logic relay-shaped.
+  3. Workflow          Encapsulate
+     adapter           the workflow.
+  4. None of the       Optionally,
+     above             add notes.
+
+tab to add notes | enter to submit answer | ←/→ to navigate questions
+"""
+
+        interaction = relay.parse_codex_question(narrow)
+
+        self.assertEqual(interaction["options"][0]["label"], "Domain port (Recommended)")
+        self.assertEqual(
+            interaction["options"][1]["description"], "Keep domain logic relay-shaped."
+        )
+        self.assertEqual(interaction["other"]["label"], "None of the above")
+
+    def test_question_identity_survives_checkbox_and_header_redraws(self):
+        initial = relay.parse_claude_question(
+            MULTI_QUESTION_VIEW.replace(
+                "Improvements  ✓ Submit →", "←  ☐ Scope  ☐ Devices  ✔ Submit  →"
+            ).replace("1. [✓] Remove", "1. [ ] Remove")
+        )
+        selected = relay.parse_claude_question(
+            MULTI_QUESTION_VIEW.replace(
+                "Improvements  ✓ Submit →", "←  ☒ Scope  ☐ Devices  ✔ Submit  →"
+            )
+        )
+
+        self.assertEqual(initial["question"], selected["question"])
+        self.assertFalse(initial["options"][0]["selected"])
+        self.assertTrue(selected["options"][0]["selected"])
+        self.assertEqual(initial["id"], selected["id"])
+
+    def test_question_header_exposes_previous_only_after_the_first_tab(self):
+        first = relay.parse_claude_question(
+            MULTI_QUESTION_VIEW.replace(
+                "Improvements  ✓ Submit →",
+                "←  \x1b[38;2;255;255;255m\x1b[48;2;87;105;247m ☐ Scope "
+                "\x1b[0m ☐ Devices  ✔ Submit  →",
+            )
+        )
+        later = relay.parse_claude_question(
+            MULTI_QUESTION_VIEW.replace(
+                "Improvements  ✓ Submit →",
+                "←  ☒ Scope  \x1b[38;2;255;255;255m\x1b[48;2;87;105;247m"
+                " ☐ Devices \x1b[0m ✔ Submit  →",
+            )
+        )
+
+        self.assertFalse(first["_can_go_back"])
+        self.assertFalse(relay.public_question_interaction(first)["can_go_back"])
+        self.assertTrue(later["_can_go_back"])
+        self.assertTrue(relay.public_question_interaction(later)["can_go_back"])
+        self.assertFalse(relay.parse_claude_question(MULTI_QUESTION_VIEW)["_can_go_back"])
+
+    def test_parses_claude_single_select_and_custom_other(self):
+        interaction = relay.parse_claude_question("""
+Deployment target →
+Which environment should receive the build?
+❯ 1. Development
+Fast feedback for the team.
+2. Staging
+Production-like verification.
+3. A dedicated scratch org
+4. Chat about this
+""")
+
+        self.assertEqual(interaction["kind"], "single_select")
+        self.assertEqual([item["label"] for item in interaction["options"]], ["Development", "Staging"])
+        self.assertEqual(interaction["other"], {"selected": True, "text": "A dedicated scratch org"})
+        self.assertEqual(interaction["_all_option_count"], 3)
+
+    def test_question_layout_hint_blocks_unsafe_fallback_when_parse_is_partial(self):
+        partial = "Which improvements?\n1. [ ] First choice\nSubmit"
+        self.assertTrue(relay.question_layout_hint(partial))
+        self.assertIsNone(relay.parse_claude_question(partial))
+        self.assertFalse(relay.question_layout_hint("Plan\n1. [ ] First task\n2. [ ] Second task"))
+
+    def test_claude_question_uses_the_unstitched_live_viewport(self):
+        live = "☒ Scope  ☐ Devices\nWhich phone environments should be included?"
+        with patch.object(relay, "merge_claude_history") as merge:
+            content = relay.claude_content_for_client(
+                "w1:p1",
+                live,
+                500,
+                "blocked",
+                question_active=True,
+            )
+
+        self.assertEqual(content, live)
+        merge.assert_not_called()
 
     def test_relay_version_marks_a_modified_checkout_dirty(self):
         results = [
@@ -191,6 +407,23 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
             payload["actions"], [{"action": "approve", "title": "Approve once"}]
         )
         self.assertNotIn("deny", payload["action_urls"])
+
+    def test_structured_question_push_opens_form_without_approval_action(self):
+        interaction = relay.public_question_interaction(
+            relay.parse_claude_question(MULTI_QUESTION_VIEW)
+        )
+        payload = relay.push_payload({
+            "event_id": "event-2",
+            "host": "fedora",
+            "pane_id": "w1:p3",
+            "project": "relay",
+            "interaction": interaction,
+            "question_layout": True,
+        })
+
+        self.assertEqual(payload["actions"], [])
+        self.assertEqual(payload["action_urls"], {})
+        self.assertIn("Which further improvements", payload["body"])
 
     def test_finished_push_payload_opens_agent_without_approval_actions(self):
         payload = relay.finished_push_payload({
@@ -935,16 +1168,14 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
     def test_checkout_command_rejects_plugin_service_config(self):
         root = RELAY_PATH.parents[1]
         with tempfile.TemporaryDirectory() as temp_dir:
-            home = Path(temp_dir)
+            home = Path(temp_dir).resolve()
             checkout_env = home / "checkout" / "relay" / ".env"
             plugin_env = home / "plugin-config" / "relay.env"
-            service_file = home / ".config" / "systemd" / "user" / "herdr-mobile-relay.service"
             checkout_env.parent.mkdir(parents=True)
             plugin_env.parent.mkdir(parents=True)
-            service_file.parent.mkdir(parents=True)
             checkout_env.touch()
             plugin_env.touch()
-            service_file.write_text(f"Environment=HERDR_RELAY_ENV={plugin_env}\n")
+            write_service_env(home, plugin_env)
             env = os.environ.copy()
             env["HOME"] = str(home)
 
@@ -969,13 +1200,11 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
     def test_command_accepts_the_service_config_it_resolved(self):
         root = RELAY_PATH.parents[1]
         with tempfile.TemporaryDirectory() as temp_dir:
-            home = Path(temp_dir)
+            home = Path(temp_dir).resolve()
             relay_env = home / "plugin-config" / "relay.env"
-            service_file = home / ".config" / "systemd" / "user" / "herdr-mobile-relay.service"
             relay_env.parent.mkdir(parents=True)
-            service_file.parent.mkdir(parents=True)
             relay_env.touch()
-            service_file.write_text(f"Environment=HERDR_RELAY_ENV={relay_env}\n")
+            write_service_env(home, relay_env)
             env = os.environ.copy()
             env["HOME"] = str(home)
 
@@ -1362,7 +1591,7 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
 
     def test_project_directory_navigation_lists_one_level_and_excludes_hidden_folders(self):
         with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as outside_dir:
-            home = Path(temp_dir)
+            home = Path(temp_dir).resolve()
             development = home / "Development"
             project = development / "relay"
             downloads = home / "Downloads"
@@ -1428,6 +1657,520 @@ class RelayHelpersTest(ClaudeHistoryIsolationMixin, unittest.TestCase):
 
 
 class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_codex_choice_moves_focus_and_submits_current_answer(self):
+        interaction = relay.parse_codex_question(CODEX_QUESTION_VIEW)
+        at_choice = copy.deepcopy(interaction)
+        at_choice["_focus"] = ("option", 2)
+        move_focus = AsyncMock(return_value=(at_choice, ""))
+        send_keys = AsyncMock(return_value=(True, ""))
+        with (
+            patch.object(relay, "move_question_focus", move_focus),
+            patch.object(relay, "send_question_keys", send_keys),
+        ):
+            ok, error = await relay.execute_question_answer(
+                "w1:p1", interaction, [2], False, ""
+            )
+
+        self.assertTrue(ok, error)
+        move_focus.assert_awaited_once_with(
+            "w1:p1", interaction, ("option", 2)
+        )
+        send_keys.assert_awaited_once_with("w1:p1", ["Enter"])
+
+    async def test_codex_custom_answer_opens_notes_and_submits_them(self):
+        interaction = relay.parse_codex_question(CODEX_QUESTION_VIEW)
+        at_other = copy.deepcopy(interaction)
+        at_other["_focus"] = ("option", 3)
+        notes_open = copy.deepcopy(at_other)
+        notes_open["_notes_active"] = True
+        with_note = copy.deepcopy(notes_open)
+        with_note["other"]["text"] = "Keep only the public contract"
+        move_focus = AsyncMock(return_value=(at_other, ""))
+        send_keys = AsyncMock(return_value=(True, ""))
+        wait_state = AsyncMock(side_effect=[(notes_open, ""), (with_note, "")])
+        send_text = AsyncMock(return_value=(True, "", ""))
+        with (
+            patch.object(relay, "move_question_focus", move_focus),
+            patch.object(relay, "send_question_keys", send_keys),
+            patch.object(relay, "wait_for_question_state", wait_state),
+            patch.object(relay, "run_herdr_async_result", send_text),
+        ):
+            ok, error = await relay.execute_question_answer(
+                "w1:p1",
+                interaction,
+                [],
+                True,
+                "Keep only the public contract",
+            )
+
+        self.assertTrue(ok, error)
+        move_focus.assert_awaited_once_with(
+            "w1:p1", interaction, ("option", 3)
+        )
+        self.assertEqual(
+            [call.args for call in send_keys.await_args_list],
+            [("w1:p1", ["Tab"]), ("w1:p1", ["Ctrl+U"]), ("w1:p1", ["Enter"])],
+        )
+        send_text.assert_awaited_once_with(
+            "pane", "send-text", "w1:p1", "Keep only the public contract"
+        )
+
+    async def test_codex_none_of_the_above_allows_empty_notes(self):
+        interaction = relay.parse_codex_question(CODEX_QUESTION_VIEW)
+
+        selected, other_selected, other_text, error = relay.validate_question_answer(
+            {
+                "selected_indices": [],
+                "other_selected": True,
+                "other_text": "",
+            },
+            interaction,
+        )
+
+        self.assertEqual(error, "")
+        self.assertEqual(selected, [])
+        self.assertTrue(other_selected)
+        self.assertEqual(other_text, "")
+
+    async def test_question_transition_ignores_one_transient_working_snapshot(self):
+        interaction = relay.parse_claude_question(MULTI_QUESTION_VIEW)
+        next_interaction = {**interaction, "id": "next-question"}
+        with (
+            patch.object(
+                relay,
+                "get_agents",
+                side_effect=[
+                    [{"pane_id": "w1:p1", "status": "working"}],
+                    [{"pane_id": "w1:p1", "status": "blocked"}],
+                ],
+            ),
+            patch.object(
+                relay.asyncio,
+                "to_thread",
+                AsyncMock(side_effect=lambda function, *args, **kwargs: function(*args, **kwargs)),
+            ),
+            patch.object(
+                relay,
+                "read_current_question",
+                AsyncMock(side_effect=[(MULTI_QUESTION_VIEW, interaction), ("next", next_interaction)]),
+            ),
+            patch.object(relay.asyncio, "sleep", AsyncMock()),
+        ):
+            transition = await relay.wait_for_question_transition(
+                "w1:p1", interaction["id"]
+            )
+
+        self.assertEqual(transition, ("advanced", next_interaction, "blocked"))
+
+    async def test_previous_question_sends_left_and_returns_the_prior_form(self):
+        interaction = relay.parse_claude_question(MULTI_QUESTION_VIEW)
+        interaction["_can_go_back"] = True
+        previous = {
+            **interaction,
+            "id": "previous-question",
+            "question": "Which scope should be included?",
+            "_can_go_back": False,
+        }
+        agent = {
+            "pane_id": "w1:p1",
+            "status": "blocked",
+            "agent": "claude",
+            "project": "relay",
+        }
+        ws = FakeWebSocket()
+        send_keys = AsyncMock(return_value=(True, ""))
+        with (
+            patch.object(relay, "agent_for_pane", return_value=(agent, "")),
+            patch.object(
+                relay.asyncio,
+                "to_thread",
+                AsyncMock(side_effect=lambda function, *args, **kwargs: function(*args, **kwargs)),
+            ),
+            patch.object(
+                relay,
+                "read_current_question",
+                AsyncMock(return_value=(MULTI_QUESTION_VIEW, interaction)),
+            ),
+            patch.object(relay, "send_question_keys", send_keys),
+            patch.object(
+                relay,
+                "wait_for_question_transition",
+                AsyncMock(return_value=("advanced", previous, "blocked")),
+            ),
+            patch.object(relay, "publish_activity", AsyncMock()),
+            patch.object(relay, "question_locks", {}),
+        ):
+            await relay.handle_navigate_question_command(ws, {
+                "type": "navigate_question",
+                "request_id": "question-previous",
+                "pane_id": "w1:p1",
+                "interaction_id": interaction["id"],
+                "direction": "previous",
+            })
+
+        send_keys.assert_awaited_once_with("w1:p1", ["Left"])
+        self.assertTrue(ws.messages[-1]["ok"])
+        self.assertEqual(ws.messages[-1]["phase"], "navigated")
+        self.assertEqual(
+            ws.messages[-1]["data"]["interaction"]["id"], "previous-question"
+        )
+
+    async def test_previous_question_rejects_first_tab_without_terminal_input(self):
+        interaction = relay.parse_claude_question(MULTI_QUESTION_VIEW)
+        agent = {
+            "pane_id": "w1:p1",
+            "status": "blocked",
+            "agent": "claude",
+            "project": "relay",
+        }
+        ws = FakeWebSocket()
+        send_keys = AsyncMock()
+        with (
+            patch.object(relay, "agent_for_pane", return_value=(agent, "")),
+            patch.object(
+                relay.asyncio,
+                "to_thread",
+                AsyncMock(side_effect=lambda function, *args, **kwargs: function(*args, **kwargs)),
+            ),
+            patch.object(
+                relay,
+                "read_current_question",
+                AsyncMock(return_value=(MULTI_QUESTION_VIEW, interaction)),
+            ),
+            patch.object(relay, "send_question_keys", send_keys),
+            patch.object(relay, "publish_activity", AsyncMock()),
+            patch.object(relay, "question_locks", {}),
+        ):
+            await relay.handle_navigate_question_command(ws, {
+                "type": "navigate_question",
+                "request_id": "question-first",
+                "pane_id": "w1:p1",
+                "interaction_id": interaction["id"],
+                "direction": "previous",
+            })
+
+        send_keys.assert_not_awaited()
+        self.assertFalse(ws.messages[-1]["ok"])
+        self.assertEqual(
+            ws.messages[-1]["data"]["interaction"]["id"], interaction["id"]
+        )
+
+    async def test_previous_question_keeps_the_current_form_when_navigation_sticks(self):
+        interaction = relay.parse_claude_question(MULTI_QUESTION_VIEW)
+        interaction["_can_go_back"] = True
+        agent = {
+            "pane_id": "w1:p1",
+            "status": "blocked",
+            "agent": "claude",
+            "project": "relay",
+        }
+        ws = FakeWebSocket()
+        with (
+            patch.object(relay, "agent_for_pane", return_value=(agent, "")),
+            patch.object(
+                relay.asyncio,
+                "to_thread",
+                AsyncMock(side_effect=lambda function, *args, **kwargs: function(*args, **kwargs)),
+            ),
+            patch.object(
+                relay,
+                "read_current_question",
+                AsyncMock(return_value=(MULTI_QUESTION_VIEW, interaction)),
+            ),
+            patch.object(
+                relay, "send_question_keys", AsyncMock(return_value=(True, ""))
+            ),
+            patch.object(
+                relay,
+                "wait_for_question_transition",
+                AsyncMock(return_value=("stuck", interaction, "blocked")),
+            ),
+            patch.object(relay, "publish_activity", AsyncMock()),
+            patch.object(relay, "question_locks", {}),
+        ):
+            await relay.handle_navigate_question_command(ws, {
+                "type": "navigate_question",
+                "request_id": "question-stuck",
+                "pane_id": "w1:p1",
+                "interaction_id": interaction["id"],
+                "direction": "previous",
+            })
+
+        self.assertFalse(ws.messages[-1]["ok"])
+        self.assertIn("did not open", ws.messages[-1]["error"])
+        self.assertEqual(
+            ws.messages[-1]["data"]["interaction"]["id"], interaction["id"]
+        )
+
+    async def test_question_option_uses_cursor_navigation_and_verifies_selection(self):
+        interaction = relay.parse_claude_question(MULTI_QUESTION_VIEW)
+        focused = copy.deepcopy(interaction)
+        focused["_focus"] = ("option", 1)
+        selected = copy.deepcopy(focused)
+        selected["options"][1]["selected"] = True
+        send_keys = AsyncMock(return_value=(True, ""))
+        with (
+            patch.object(relay, "send_question_keys", send_keys),
+            patch.object(
+                relay,
+                "read_current_question",
+                AsyncMock(side_effect=[("focused", focused), ("selected", selected)]),
+            ),
+        ):
+            latest, error = await relay.set_question_option(
+                "w1:p1", interaction, 1, True
+            )
+
+        self.assertEqual(error, "")
+        self.assertTrue(latest["options"][1]["selected"])
+        self.assertEqual(
+            [call.args for call in send_keys.await_args_list],
+            [("w1:p1", ["Down"]), ("w1:p1", ["Enter"])],
+        )
+
+    async def test_question_other_text_avoids_unsupported_cursor_keys(self):
+        interaction = relay.parse_claude_question(MULTI_QUESTION_VIEW)
+        focused = copy.deepcopy(interaction)
+        focused["_focus"] = ("option", 4)
+        edited = copy.deepcopy(focused)
+        edited["other"] = {"selected": True, "text": "Back-port all four"}
+        send_keys = AsyncMock(return_value=(True, ""))
+        send_text = AsyncMock(return_value=(True, "", ""))
+        with (
+            patch.object(relay, "send_question_keys", send_keys),
+            patch.object(relay, "run_herdr_async_result", send_text),
+            patch.object(
+                relay,
+                "read_current_question",
+                AsyncMock(side_effect=[("focused", focused), ("edited", edited)]),
+            ),
+        ):
+            latest, error = await relay.set_question_other_text(
+                "w1:p1", interaction, "Back-port all four"
+            )
+
+        self.assertEqual(error, "")
+        self.assertEqual(latest["other"]["text"], "Back-port all four")
+        self.assertEqual(
+            [call.args for call in send_keys.await_args_list],
+            [("w1:p1", ["Down", "Down", "Down", "Down"]), ("w1:p1", ["Ctrl+U"])],
+        )
+        send_text.assert_awaited_once_with(
+            "pane", "send-text", "w1:p1", "Back-port all four"
+        )
+
+    async def test_multi_question_answer_rechecks_each_change_before_next(self):
+        interaction = relay.parse_claude_question(MULTI_QUESTION_VIEW)
+        after_first = copy.deepcopy(interaction)
+        after_first["options"][0]["selected"] = False
+        after_first["_focus"] = ("option", 0)
+        after_second = copy.deepcopy(after_first)
+        after_second["options"][1]["selected"] = True
+        after_second["_focus"] = ("option", 1)
+        after_other = copy.deepcopy(after_second)
+        after_other["other"] = {"selected": True, "text": "Back-port all four"}
+        after_other["_focus"] = ("option", 4)
+        at_submit = copy.deepcopy(after_other)
+        at_submit["_focus"] = ("submit", 0)
+
+        set_option = AsyncMock(side_effect=[(after_first, ""), (after_second, "")])
+        set_other = AsyncMock(return_value=(after_other, ""))
+        move_focus = AsyncMock(return_value=(at_submit, ""))
+        send_keys = AsyncMock(return_value=(True, ""))
+        with (
+            patch.object(relay, "set_question_option", set_option),
+            patch.object(relay, "set_question_other_text", set_other),
+            patch.object(relay, "move_question_focus", move_focus),
+            patch.object(relay, "send_question_keys", send_keys),
+        ):
+            ok, error = await relay.execute_question_answer(
+                "w1:p1", interaction, [1, 2], True, "Back-port all four"
+            )
+
+        self.assertTrue(ok, error)
+        self.assertEqual(
+            [call.args[2:] for call in set_option.await_args_list],
+            [(0, False), (1, True)],
+        )
+        self.assertIs(set_option.await_args_list[1].args[1], after_first)
+        set_other.assert_awaited_once_with(
+            "w1:p1", after_second, "Back-port all four"
+        )
+        move_focus.assert_awaited_once_with(
+            "w1:p1", after_other, ("submit", 0)
+        )
+        send_keys.assert_awaited_once_with("w1:p1", ["Enter"])
+
+    async def test_question_key_delivery_stops_after_the_first_failure(self):
+        command = AsyncMock(side_effect=[(True, "", ""), (False, "", "dropped")])
+        with (
+            patch.object(relay, "run_herdr_async_result", command),
+            patch.object(relay.asyncio, "sleep", AsyncMock()) as sleep,
+        ):
+            ok, error = await relay.send_question_keys(
+                "w1:p1", ["Down", "Down", "Enter"]
+            )
+
+        self.assertFalse(ok)
+        self.assertEqual(error, "dropped")
+        self.assertEqual(
+            [call.args for call in command.await_args_list],
+            [
+                ("pane", "send-keys", "w1:p1", "Down"),
+                ("pane", "send-keys", "w1:p1", "Down"),
+            ],
+        )
+        sleep.assert_awaited_once_with(relay.QUESTION_KEY_DELAY)
+
+    async def test_stale_question_is_rejected_without_terminal_input(self):
+        ws = FakeWebSocket()
+        interaction = relay.parse_claude_question(MULTI_QUESTION_VIEW)
+        agent = {
+            "pane_id": "w1:p1",
+            "status": "blocked",
+            "agent": "claude",
+            "project": "relay",
+        }
+        with (
+            patch.object(relay, "agent_for_pane", return_value=(agent, "")),
+            patch.object(
+                relay.asyncio,
+                "to_thread",
+                AsyncMock(side_effect=lambda function, *args, **kwargs: function(*args, **kwargs)),
+            ),
+            patch.object(relay, "read_current_question", AsyncMock(return_value=(MULTI_QUESTION_VIEW, interaction))),
+            patch.object(relay, "run_herdr_async_result", AsyncMock()) as command,
+            patch.object(relay, "publish_activity", AsyncMock()),
+            patch.object(relay, "question_locks", {}),
+        ):
+            await relay.handle_answer_question_command(ws, {
+                "type": "answer_question",
+                "request_id": "question-1",
+                "pane_id": "w1:p1",
+                "interaction_id": "stale-question",
+                "selected_indices": [0, 2],
+                "other_selected": False,
+                "other_text": "",
+            })
+
+        self.assertFalse(ws.messages[-1]["ok"])
+        self.assertIn("question changed", ws.messages[-1]["error"])
+        self.assertEqual(ws.messages[-1]["data"]["interaction"]["id"], interaction["id"])
+        command.assert_not_awaited()
+
+    async def test_live_question_is_accepted_when_agent_status_is_done(self):
+        ws = FakeWebSocket()
+        interaction = relay.parse_claude_question(MULTI_QUESTION_VIEW)
+        agent = {
+            "pane_id": "w1:p1",
+            "status": "done",
+            "agent": "claude",
+            "project": "relay",
+        }
+        execute = AsyncMock(return_value=(True, ""))
+        finish = AsyncMock()
+        with (
+            patch.object(relay, "agent_for_pane", return_value=(agent, "")),
+            patch.object(
+                relay.asyncio,
+                "to_thread",
+                AsyncMock(side_effect=lambda function, *args, **kwargs: function(*args, **kwargs)),
+            ),
+            patch.object(
+                relay,
+                "read_current_question",
+                AsyncMock(return_value=(MULTI_QUESTION_VIEW, interaction)),
+            ),
+            patch.object(relay, "execute_question_answer", execute),
+            patch.object(relay, "send_command_result", AsyncMock()),
+            patch.object(relay, "finish_question_command", finish),
+            patch.object(relay, "question_locks", {}),
+        ):
+            await relay.handle_answer_question_command(ws, {
+                "type": "answer_question",
+                "request_id": "question-live",
+                "pane_id": "w1:p1",
+                "interaction_id": interaction["id"],
+                "selected_indices": [0, 2],
+                "other_selected": False,
+                "other_text": "",
+            })
+
+        execute.assert_awaited_once_with(
+            "w1:p1", interaction, [0, 2], False, ""
+        )
+        finish.assert_awaited_once()
+
+    async def test_live_question_chat_is_accepted_when_agent_status_is_done(self):
+        ws = FakeWebSocket()
+        interaction = relay.parse_claude_question(MULTI_QUESTION_VIEW)
+        agent = {
+            "pane_id": "w1:p1",
+            "status": "done",
+            "agent": "claude",
+            "project": "relay",
+        }
+        send_keys = AsyncMock(return_value=(True, ""))
+        with (
+            patch.object(relay, "agent_for_pane", return_value=(agent, "")),
+            patch.object(
+                relay.asyncio,
+                "to_thread",
+                AsyncMock(side_effect=lambda function, *args, **kwargs: function(*args, **kwargs)),
+            ),
+            patch.object(
+                relay,
+                "read_current_question",
+                AsyncMock(return_value=(MULTI_QUESTION_VIEW, interaction)),
+            ),
+            patch.object(relay, "send_question_keys", send_keys),
+            patch.object(
+                relay,
+                "wait_for_question_transition",
+                AsyncMock(return_value=("confirmed", None, "working")),
+            ),
+            patch.object(relay, "publish_activity", AsyncMock()),
+            patch.object(relay, "question_locks", {}),
+        ):
+            await relay.handle_clarify_question_command(ws, {
+                "type": "clarify_question",
+                "request_id": "question-chat-live",
+                "pane_id": "w1:p1",
+                "interaction_id": interaction["id"],
+            })
+
+        send_keys.assert_awaited_once()
+        self.assertTrue(ws.messages[-1]["ok"])
+
+    async def test_answered_question_returns_the_next_chained_form(self):
+        ws = FakeWebSocket()
+        interaction = relay.parse_claude_question(MULTI_QUESTION_VIEW)
+        next_interaction = {**interaction, "id": "next-question", "question": "Choose a release window"}
+        agent = {
+            "pane_id": "w1:p1",
+            "status": "blocked",
+            "agent": "claude",
+            "project": "relay",
+        }
+        with (
+            patch.object(
+                relay,
+                "wait_for_question_transition",
+                AsyncMock(return_value=("advanced", next_interaction, "blocked")),
+            ),
+            patch.object(relay, "publish_activity", AsyncMock()),
+        ):
+            await relay.finish_question_command(
+                ws,
+                {"request_id": "question-2", "source": "App"},
+                agent,
+                interaction,
+            )
+
+        self.assertTrue(ws.messages[-1]["ok"])
+        self.assertEqual(ws.messages[-1]["phase"], "advanced")
+        self.assertEqual(ws.messages[-1]["data"]["interaction"]["id"], "next-question")
+
     async def test_poll_gate_does_not_skip_status_or_history_bookkeeping(self):
         def agent_snapshot():
             return [{
@@ -1600,6 +2343,20 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
         )
         self.assertEqual(relay.claude_history_state["w1:p1"]["snapshot"], ["First", "Second"])
         relay.claude_history_state.clear()
+
+    async def test_claude_history_capture_skips_mutable_question_viewport(self):
+        relay.agent_types["w1:p1"] = "claude"
+        try:
+            with (
+                patch.object(relay, "run_herdr_async", AsyncMock(return_value=MULTI_QUESTION_VIEW)),
+                patch.object(relay, "merge_claude_history") as merge,
+            ):
+                await relay.capture_claude_history("w1:p1")
+        finally:
+            relay.agent_types.clear()
+            relay.claude_history_inflight.clear()
+
+        merge.assert_not_called()
 
     async def test_http_serves_phone_app_without_exposing_websocket(self):
         with patch.object(relay, "AUTH_TOKEN", "secret-token-value"):

@@ -2,7 +2,7 @@
 
 [![check](https://github.com/0cv/herdr-mobile-relay/actions/workflows/check.yml/badge.svg)](https://github.com/0cv/herdr-mobile-relay/actions/workflows/check.yml)
 
-Approve [Herdr](https://herdr.dev) agents from your phone across multiple computers.
+Approve and answer [Herdr](https://herdr.dev) agents from your phone across multiple computers.
 
 Herdr Mobile Relay runs a small local relay on each computer, exposes each relay through its own Cloudflare Tunnel hostname, and lets one static web app connect to all of them. The phone UI merges agents from every configured relay, so you can approve or inspect agents running on a Mac, a Fedora workstation, or any other supported machine without making those computers connect to each other.
 
@@ -57,6 +57,7 @@ Forked from [dcolinmorgan/herdr-remote](https://github.com/dcolinmorgan/herdr-re
 - **PWA notifications:** installed phones receive Web Push notifications when an agent blocks, including a safe Approve once action; denial remains available after opening the app, and optional completion alerts can open the finished agent directly.
 - **Mobile terminal composer:** terminal view has a compact phone-first composer, quick terminal keys, a phone-local Copy response button, inline approval actions, themes, font sizing, and a jump-to-bottom affordance.
 - **Real approval handling:** blocked cards parse prompt text and approval options, then map visible choices back to the correct Herdr key actions for Codex and Claude Code.
+- **Structured question forms:** Claude Code single-choice/multi-checkbox questions and Codex Plan-mode interviews render as accessible phone-native forms, including option descriptions, custom answers or notes, chained questions, and previous-question navigation. Answers stay local until Next or Submit.
 - **Confirmed controls and activity:** command acknowledgements report failures explicitly, approvals wait for an observed state change, and a bounded per-relay activity history is merged on the phone.
 - **Activity-aware home ordering:** agents most recently changed on their computer appear first within each status section, including activity initiated outside the phone app.
 - **Remote agent management:** start automatically detected installed agents, then rename, clear, or stop them from the phone.
@@ -90,6 +91,7 @@ Forked from [dcolinmorgan/herdr-remote](https://github.com/dcolinmorgan/herdr-re
 - Lets the static web app connect to multiple relays and merge their agent lists client-side.
 - Uses relay labels from the web app, such as `Mac` or `Fedora`, as the visible host badges.
 - Shows blocked prompts with inline approval buttons on the agent list and in the terminal view.
+- Shows a compact summary for Claude Code and Codex Plan-mode questions on the agent list and the complete staged answer form in the terminal view.
 - Sends Web Push notifications for blocked agents to installed phones, even when the app is closed or suspended, with optional notifications when agents finish.
 - Routes notification taps and the Approve once action back to the matching relay and pane when the app can resolve it.
 - Confirms remote commands and records blocked, resolved, approval, prompt, upload, and lifecycle activity locally on each relay.
@@ -171,6 +173,10 @@ Then tap **Enable Notifications** in Settings. The relay generates Web Push VAPI
 For multiple relays, the app creates one scoped service-worker push subscription per relay. Each relay keeps its standard VAPID keypair and subscriptions privately under `relay/push/`; no push configuration is required.
 
 In the terminal view, tap the image icon to attach a screenshot or photo. The web app uploads images up to 10 MB to `~/.cache/herdr-mobile-relay/uploads` on that computer and inserts the local file path into the prompt.
+
+When Claude Code or Codex asks a structured question, open the blocked agent to answer it. Single-choice questions use radio buttons; Claude multi-choice questions use checkboxes. Option descriptions, Claude's custom **Other answer**, and Codex's **None of the above** with optional notes are preserved. Nothing is sent while you make selections: tap **Next** or **Submit** to send the current answer. If an agent chains several questions, the next form replaces the current one; **Previous** returns to an earlier question without submitting the current draft, and each question's draft is restored when revisited. Claude's final review and Codex's final answer are confirmed by the relay. **Chat about this** remains available on Claude questions. Ordinary permission prompts keep their existing one-tap approval buttons.
+
+Structured questions require app/relay protocol v2. A newly loaded app continues to show an older relay but disables mutations until that relay is updated and restarted, preventing question answers from being interpreted as positional approvals.
 
 Claude Code's alternate-screen interface exposes only its current visible rows through Herdr. The relay therefore builds a stable, bounded 500-line history per Claude pane from advancing snapshots. Known older viewports are ignored, so scrolling the laptop while Claude is idle does not rewrite the phone history. The accumulated history — up to 500 lines of terminal content per pane — is persisted in `~/.cache/herdr-mobile-relay/claude-history/` (one file per pane, `0600` permissions) so it survives relay restarts. A pane's file is deleted when the pane closes, and files for panes that no longer exist are removed after 7 days. The relay still cannot recover text discarded before it first saw the pane.
 

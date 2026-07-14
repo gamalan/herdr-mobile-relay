@@ -7,6 +7,7 @@
 import asyncio
 import base64
 import difflib
+import hashlib
 import hmac
 import json
 import os
@@ -61,6 +62,7 @@ WS_HOST = os.environ.get("HERDR_RELAY_HOST", "127.0.0.1")
 WS_PORT = int(os.environ.get("HERDR_RELAY_PORT", "8375"))
 POLL_INTERVAL = float(os.environ.get("HERDR_RELAY_POLL_INTERVAL", "2"))
 IDLE_POLL_INTERVAL = max(POLL_INTERVAL, 15.0)
+QUESTION_KEY_DELAY = 0.15
 PLUGIN_PORT = int(os.environ.get("HERDR_RELAY_PLUGIN_PORT", "8376"))
 AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Shared secret for public/browser relay auth
 RELAY_INSTANCE_ID = os.environ.get("HERDR_RELAY_INSTANCE_ID", "")
@@ -112,13 +114,15 @@ AGENT_PROFILE_CANDIDATES = {
     "opencode": "OpenCode",
 }
 MACOS_PROTECTED_HOME_DIRECTORIES = {"Desktop", "Documents", "Downloads"}
-RELAY_CAPABILITIES = ["directory_browser"]
-# Version 1 is the existing positional approval protocol. Bump only when a
-# WebSocket message changes incompatibly, together with APP_PROTOCOL_VERSION
-# in web/index.html.
-PROTOCOL_VERSION = 1
+RELAY_CAPABILITIES = ["directory_browser", "structured_questions"]
+# Version 2 adds staged Claude Code question answers. Bump together with
+# APP_PROTOCOL_VERSION in web/index.html whenever mutations change incompatibly.
+PROTOCOL_VERSION = 2
 MUTATING_MESSAGE_TYPES = frozenset({
+    "answer_question",
+    "navigate_question",
     "respond",
+    "clarify_question",
     "push_subscribe",
     "push_unsubscribe",
     "submit_prompt",
@@ -140,6 +144,7 @@ POLL_WAKE_ACTIONS = frozenset({
     "agent_start",
     "agent_stop",
     "approval",
+    "question",
     "keys",
     "prompt",
     "text",
@@ -207,6 +212,29 @@ PROMPT_SKIP_RE = re.compile(
     re.IGNORECASE,
 )
 MENU_OPTION_RE = re.compile(r"^\s*[❯›]?\s*(\d+)\.\s+(.+?)\s*$")
+QUESTION_CHECKBOX_RE = re.compile(
+    r"^\s*(?P<focus>[❯›]?)\s*(?P<number>\d+)\.\s*"
+    r"\[(?P<mark>[^\]])\]\s*(?P<label>.+?)\s*$"
+)
+QUESTION_SUBMIT_RE = re.compile(r"^\s*(?P<focus>[❯›]?)\s*(?P<label>Submit|Next)\s*$", re.IGNORECASE)
+QUESTION_CHAT_RE = re.compile(
+    r"^\s*(?P<focus>[❯›]?)\s*(?:(?P<number>\d+)\.\s*)?Chat about this\s*$",
+    re.IGNORECASE,
+)
+QUESTION_OTHER_RE = re.compile(r"^(?:type something\.?|other(?::\s*)?)$", re.IGNORECASE)
+CODEX_QUESTION_HEADER_RE = re.compile(
+    r"^\s*Question\s+(?P<current>\d+)\s*/\s*(?P<total>\d+)\s*"
+    r"\((?P<unanswered>\d+)\s+unanswered\)\s*$",
+    re.IGNORECASE,
+)
+CODEX_QUESTION_FOOTER_RE = re.compile(
+    r"(?:tab to add notes|enter to submit (?:answer|all)|←/→ to navigate questions)",
+    re.IGNORECASE,
+)
+CODEX_NOTES_RE = re.compile(r"^\s*[❯›]\s*(?P<text>.+?)\s*$")
+ANSI_BACKGROUND_RE = re.compile(
+    r"\x1b\[(?:\d+;)*48;(?:2;\d+;\d+;\d+|5;\d+)m"
+)
 COMMAND_RE = re.compile(r"^\s*(?:[$>]|\u276f|\u203a)\s+(.+?)\s*$")
 
 clients = set()
@@ -230,6 +258,7 @@ claude_history_inflight = set()
 claude_history_pending_captures = set()
 event_queue = asyncio.Queue()
 poll_wakeup = asyncio.Event()
+question_locks = {}
 
 
 def run_herdr_result(*args):
@@ -625,6 +654,22 @@ def merge_claude_history(pane_id, content, limit=CLAUDE_HISTORY_MAX_LINES):
     return claude_history_content(state, limit)
 
 
+def claude_content_for_client(pane_id, content, limit, status, question_active=False):
+    """Keep Claude's mutable question viewport internally consistent.
+
+    Question navigation redraws the header and body in place. Merging that
+    viewport into stored scrollback can pair a header from one question with
+    the body from another, so serve the live frame verbatim until the question
+    is dismissed.
+    """
+    if question_active:
+        return content or ""
+    state = load_claude_history_state(pane_id)
+    if state is not None and status not in {"working", "blocked"}:
+        return claude_history_content(state, limit)
+    return merge_claude_history(pane_id, content, limit)
+
+
 async def capture_claude_history(pane_id):
     claude_history_inflight.add(pane_id)
     try:
@@ -634,7 +679,11 @@ async def capture_claude_history(pane_id):
             "--source", "recent-unwrapped",
             "--format", "ansi",
         )
-        if content and "claude" in agent_types.get(pane_id, ""):
+        if (
+            content
+            and "claude" in agent_types.get(pane_id, "")
+            and not question_layout_hint(content)
+        ):
             merge_claude_history(pane_id, content)
     finally:
         claude_history_inflight.discard(pane_id)
@@ -664,12 +713,22 @@ def schedule_claude_history_capture(agent, timestamp=None, force=False):
     asyncio.create_task(capture_claude_history(pane_id))
 
 
+def read_question_pane(pane_id):
+    return run_herdr(
+        "pane", "read", pane_id,
+        "--lines", "80",
+        "--source", "recent-unwrapped",
+    ) or ""
+
+
 def read_pane(pane_id):
-    raw = run_herdr("pane", "read", pane_id, "--lines", "20", "--source", "recent-unwrapped")
-    if raw is None:
-        return ""
+    raw = read_question_pane(pane_id)
+    return pane_summary(raw)
+
+
+def pane_summary(raw):
     lines = []
-    for line in raw.splitlines():
+    for line in str(raw or "").splitlines():
         clean = clean_pane_line(line)
         if clean and not CHROME_RE.search(clean) and not PROMPT_SKIP_RE.search(clean):
             lines.append(line)
@@ -681,6 +740,447 @@ def clean_pane_line(line):
     clean = re.sub(r"^[│|]\s*", "", clean)
     clean = re.sub(r"\s*[│|]$", "", clean)
     return clean.strip()
+
+
+def question_layout_hint(text):
+    lines = [clean_pane_line(line) for line in str(text or "").splitlines()]
+    clean = "\n".join(lines)
+    has_checkbox = any(QUESTION_CHECKBOX_RE.match(line) for line in lines)
+    has_submit = any(QUESTION_SUBMIT_RE.match(line) for line in lines)
+    has_chat = bool(re.search(r"\bChat about this\b", clean, re.IGNORECASE))
+    has_codex_header = any(CODEX_QUESTION_HEADER_RE.match(line) for line in lines)
+    has_codex_footer = any(CODEX_QUESTION_FOOTER_RE.search(line) for line in lines)
+    return bool(
+        (has_checkbox and (has_submit or has_chat))
+        or has_chat
+        or (has_codex_header and has_codex_footer)
+        or re.search(r"\bReview your answers\b", clean, re.IGNORECASE)
+    )
+
+
+def question_review_visible(text):
+    clean = "\n".join(clean_pane_line(line) for line in str(text or "").splitlines())
+    return bool(
+        re.search(r"\bReview your answers\b", clean, re.IGNORECASE)
+        and re.search(r"\bSubmit answers\b|\bReady to submit your answers\?", clean, re.IGNORECASE)
+    )
+
+
+def question_can_go_back(text):
+    """Whether Claude's ANSI question header has an earlier question tab."""
+    for raw_line in str(text or "").splitlines():
+        clean = clean_pane_line(raw_line)
+        if "←" not in clean or "→" not in clean or "Submit" not in clean:
+            continue
+        active = ANSI_BACKGROUND_RE.search(raw_line)
+        if not active:
+            return False
+        prefix = clean_pane_line(raw_line[:active.start()])
+        prefix = re.sub(r"[←☐☒☑✓✔\s]+", "", prefix)
+        return bool(re.search(r"[\w]", prefix, re.UNICODE))
+    return False
+
+
+def question_description(lines, start, end):
+    parts = []
+    for line in lines[start + 1:end]:
+        if not line or CHROME_RE.search(line):
+            continue
+        if (
+            QUESTION_CHECKBOX_RE.match(line)
+            or MENU_OPTION_RE.match(line)
+            or QUESTION_SUBMIT_RE.match(line)
+            or QUESTION_CHAT_RE.match(line)
+            or re.search(r"Enter to select|↑/↓ to navigate|Esc to cancel", line, re.IGNORECASE)
+        ):
+            continue
+        parts.append(line)
+    return compact_text(" ".join(parts), 500)
+
+
+def question_prompt(lines, first_option_index):
+    for line in reversed(lines[:first_option_index]):
+        if not line or CHROME_RE.search(line):
+            continue
+        if (
+            QUESTION_SUBMIT_RE.match(line)
+            or QUESTION_CHAT_RE.match(line)
+            or re.search(r"^(?:Planning:|Read \d+ files?|Agent\b|User\b)", line, re.IGNORECASE)
+            or re.search(r"Enter to select|↑/↓ to navigate|Esc to cancel", line, re.IGNORECASE)
+            or ("Submit" in line and ("✓" in line or "→" in line))
+        ):
+            continue
+        return compact_text(line, 1000)
+    return "Claude Code needs an answer"
+
+
+def question_interaction_id(kind, question, options, submit_label):
+    # The multi-question header is mutable: selecting a checkbox changes its
+    # empty/completed glyph even though Claude is still showing the same
+    # question. Keep identity semantic so ordinary redraws cannot look like a
+    # chained-question transition.
+    stable = json.dumps(
+        {
+            "kind": kind,
+            "question": question,
+            "options": [item["label"] for item in options],
+            "submit_label": submit_label,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(stable.encode()).hexdigest()[:20]
+
+
+def public_question_interaction(interaction):
+    if not interaction:
+        return None
+    return {
+        "id": interaction["id"],
+        "kind": interaction["kind"],
+        "question": interaction["question"],
+        "options": interaction["options"],
+        "other": interaction["other"],
+        "submit_label": interaction["submit_label"],
+        "can_chat": interaction["can_chat"],
+        "can_go_back": bool(interaction.get("_can_go_back")),
+    }
+
+
+def codex_plain_line(line):
+    return ANSI_RE.sub("", str(line or "")).replace("\r", "").rstrip()
+
+
+def codex_option_description_column(plain_lines, option_rows):
+    """Find the aligned description column in Codex's two-column option table."""
+    counts = {}
+    for line_index, match in option_rows:
+        line = plain_lines[line_index]
+        prefix = re.match(r"^\s*[❯›]?\s*\d+\.\s+", line)
+        if not prefix:
+            continue
+        body = line[prefix.end():]
+        gap = re.search(r"\s{2,}(?=\S)", body)
+        if not gap:
+            continue
+        column = prefix.end() + gap.end()
+        counts[column] = counts.get(column, 0) + 1
+    if not counts:
+        return None
+    return max(counts, key=lambda column: (counts[column], -column))
+
+
+def codex_option_parts(plain_lines, start, end, description_column):
+    first = re.match(r"^\s*[❯›]?\s*\d+\.\s+", plain_lines[start])
+    if not first:
+        return "", ""
+    first_body = plain_lines[start][first.end():]
+    first_gap = re.search(r"\s{2,}(?=\S)", first_body)
+    row_description_column = (
+        first.end() + first_gap.end() if first_gap else description_column
+    )
+    label_parts = []
+    description_parts = []
+    for line_index in range(start, end):
+        line = plain_lines[line_index]
+        if not line.strip():
+            continue
+        if row_description_column is None:
+            left, right = line, ""
+        else:
+            left = line[:row_description_column]
+            right = line[row_description_column:]
+        if line_index == start:
+            left = left[first.end():]
+        left = left.strip()
+        right = right.strip()
+        if left:
+            label_parts.append(left)
+        if right:
+            description_parts.append(right)
+    return compact_text(" ".join(label_parts), 500), compact_text(
+        " ".join(description_parts), 500
+    )
+
+
+def parse_codex_question(text):
+    """Parse Codex CLI's Plan-mode ``request_user_input`` panel."""
+    raw_lines = str(text or "").splitlines()
+    plain_lines = [codex_plain_line(line) for line in raw_lines]
+    clean_lines = [clean_pane_line(line) for line in raw_lines]
+    headers = [
+        (index, match)
+        for index, line in enumerate(clean_lines)
+        if (match := CODEX_QUESTION_HEADER_RE.match(line))
+    ]
+    if not headers:
+        return None
+    header_index, header = headers[-1]
+    footer_index = next(
+        (
+            index
+            for index in range(header_index + 1, len(clean_lines))
+            if CODEX_QUESTION_FOOTER_RE.search(clean_lines[index])
+        ),
+        None,
+    )
+    if footer_index is None:
+        return None
+
+    option_rows = []
+    expected = 1
+    for line_index in range(header_index + 1, footer_index):
+        match = MENU_OPTION_RE.match(clean_lines[line_index])
+        if not match:
+            continue
+        number = int(match.group(1))
+        if number != expected:
+            continue
+        option_rows.append((line_index, match))
+        expected += 1
+    if len(option_rows) < 3:
+        return None
+
+    first_option_index = option_rows[0][0]
+    question = compact_text(
+        " ".join(
+            line
+            for line in clean_lines[header_index + 1:first_option_index]
+            if line
+        ),
+        1000,
+    )
+    if not question:
+        return None
+
+    notes_index = next(
+        (
+            index
+            for index in range(option_rows[-1][0] + 1, footer_index)
+            if CODEX_NOTES_RE.match(clean_lines[index])
+            and not MENU_OPTION_RE.match(clean_lines[index])
+        ),
+        None,
+    )
+    row_ends = [row[0] for row in option_rows[1:]] + [notes_index or footer_index]
+    description_column = codex_option_description_column(plain_lines, option_rows)
+    all_options = []
+    focus = None
+    for option_index, ((line_index, _match), end_index) in enumerate(
+        zip(option_rows, row_ends)
+    ):
+        label, description = codex_option_parts(
+            plain_lines, line_index, end_index, description_column
+        )
+        if not label:
+            return None
+        focused = bool(re.match(r"^\s*[❯›]", plain_lines[line_index]))
+        all_options.append({
+            "index": option_index,
+            "label": label,
+            "description": description,
+            "selected": False,
+        })
+        if focused:
+            focus = ("option", option_index)
+
+    notes_text = ""
+    if notes_index is not None:
+        notes_match = CODEX_NOTES_RE.match(clean_lines[notes_index])
+        candidate = compact_text(notes_match.group("text") if notes_match else "", 20000)
+        if candidate.lower() != "add notes":
+            notes_text = candidate
+
+    current = int(header.group("current"))
+    total = int(header.group("total"))
+    prompt_has_unanswered_style = any(
+        "\x1b[38;5;6m" in raw_lines[index]
+        for index in range(header_index + 1, first_option_index)
+    )
+    answered = bool("\x1b[" in str(text or "")) and not prompt_has_unanswered_style
+    if notes_index is not None:
+        focus = ("option", len(all_options) - 1)
+        answered = True
+    if answered and focus:
+        all_options[focus[1]]["selected"] = True
+
+    other_item = None
+    if all_options and re.search(
+        r"^(?:none of the above|other)\b", all_options[-1]["label"], re.IGNORECASE
+    ):
+        other_item = all_options.pop()
+    if other_item is None:
+        return None
+    if focus and focus[1] == len(all_options):
+        focus = ("option", len(all_options))
+
+    submit_label = "Submit" if current >= total else "Next"
+    kind = "single_select"
+    return {
+        "id": question_interaction_id(kind, question, all_options, submit_label),
+        "kind": kind,
+        "question": question,
+        "options": all_options,
+        "other": {
+            "selected": bool(other_item["selected"] or notes_index is not None),
+            "text": notes_text,
+            "label": other_item["label"],
+            "placeholder": "Optional notes",
+            "allow_empty": True,
+        },
+        "submit_label": submit_label,
+        "can_chat": False,
+        "_agent": "codex",
+        "_can_go_back": current > 1,
+        "_focus": focus or ("option", 0),
+        "_all_option_count": len(all_options) + 1,
+        "_notes_active": notes_index is not None,
+        "_question_index": current,
+        "_question_total": total,
+    }
+
+
+def parse_question(text, agent_type=""):
+    normalized = str(agent_type or "").lower()
+    if "codex" in normalized:
+        return parse_codex_question(text)
+    if "claude" in normalized:
+        return parse_claude_question(text)
+    return parse_codex_question(text) or parse_claude_question(text)
+
+
+def supports_structured_questions(agent_type):
+    normalized = str(agent_type or "").lower()
+    return "claude" in normalized or "codex" in normalized
+
+
+def parse_claude_question(text):
+    """Parse Claude Code's AskUserQuestion terminal form.
+
+    The returned underscore-prefixed fields describe terminal focus and are
+    intentionally removed before the interaction is sent to the browser.
+    """
+    can_go_back = question_can_go_back(text)
+    lines = [clean_pane_line(line) for line in str(text or "").splitlines()]
+    checkbox_rows = []
+    for line_index, line in enumerate(lines):
+        match = QUESTION_CHECKBOX_RE.match(line)
+        if match:
+            checkbox_rows.append((line_index, match))
+
+    chat_match = None
+    chat_index = len(lines)
+    submit_match = None
+    submit_index = len(lines)
+    for line_index, line in enumerate(lines):
+        match = QUESTION_CHAT_RE.match(line)
+        if match:
+            chat_match = match
+            chat_index = line_index
+        match = QUESTION_SUBMIT_RE.match(line)
+        if match:
+            submit_match = match
+            submit_index = line_index
+
+    if len(checkbox_rows) >= 2 and submit_match:
+        all_options = []
+        row_ends = [row[0] for row in checkbox_rows[1:]] + [min(submit_index, chat_index)]
+        focus = None
+        for option_index, ((line_index, match), end_index) in enumerate(zip(checkbox_rows, row_ends)):
+            item = {
+                "index": option_index,
+                "label": compact_text(match.group("label"), 500),
+                "description": question_description(lines, line_index, end_index),
+                "selected": bool(match.group("mark").strip()),
+            }
+            all_options.append(item)
+            if match.group("focus"):
+                focus = ("option", option_index)
+
+        other_item = all_options[-1]
+        options = all_options[:-1]
+        other_label = other_item["label"]
+        other_text = "" if QUESTION_OTHER_RE.match(other_label) else other_label
+        if submit_match and submit_match.group("focus"):
+            focus = ("submit", 0)
+        if chat_match and chat_match.group("focus"):
+            focus = ("chat", 0)
+        question = question_prompt(lines, checkbox_rows[0][0])
+        submit_label = submit_match.group("label").title() if submit_match else "Submit"
+        kind = "multi_select"
+        return {
+            "id": question_interaction_id(
+                kind, question, options, submit_label,
+            ),
+            "kind": kind,
+            "question": question,
+            "options": options,
+            "other": {
+                "selected": other_item["selected"],
+                "text": other_text,
+            },
+            "submit_label": submit_label,
+            "can_chat": chat_match is not None,
+            "_can_go_back": can_go_back,
+            "_focus": focus or ("option", 0),
+            "_all_option_count": len(all_options),
+        }
+
+    if chat_match is None:
+        return None
+
+    plain_rows = []
+    expected = 1
+    for line_index, line in enumerate(lines[:chat_index]):
+        match = MENU_OPTION_RE.match(line)
+        if not match:
+            continue
+        number = int(match.group(1))
+        if number == 1:
+            plain_rows = [(line_index, match)]
+            expected = 2
+        elif plain_rows and number == expected:
+            plain_rows.append((line_index, match))
+            expected += 1
+    if len(plain_rows) < 3:
+        return None
+
+    all_options = []
+    row_ends = [row[0] for row in plain_rows[1:]] + [chat_index]
+    focus = None
+    for option_index, ((line_index, match), end_index) in enumerate(zip(plain_rows, row_ends)):
+        label = compact_text(match.group(2), 500)
+        all_options.append({
+            "index": option_index,
+            "label": label,
+            "description": question_description(lines, line_index, end_index),
+            "selected": False,
+        })
+        if re.match(r"^\s*[❯›]", lines[line_index]):
+            focus = ("option", option_index)
+
+    other_item = all_options[-1]
+    options = all_options[:-1]
+    other_text = "" if QUESTION_OTHER_RE.match(other_item["label"]) else other_item["label"]
+    if chat_match.group("focus"):
+        focus = ("chat", 0)
+    question = question_prompt(lines, plain_rows[0][0])
+    kind = "single_select"
+    return {
+        "id": question_interaction_id(
+            kind, question, options, "",
+        ),
+        "kind": kind,
+        "question": question,
+        "options": options,
+        "other": {"selected": bool(other_text), "text": other_text},
+        "submit_label": "",
+        "can_chat": True,
+        "_can_go_back": can_go_back,
+        "_focus": focus or ("option", 0),
+        "_all_option_count": len(all_options),
+    }
 
 
 def detect_options(text):
@@ -1192,6 +1692,18 @@ def push_payload(blocked_msg):
     options = blocked_msg.get("options") if isinstance(blocked_msg.get("options"), list) else TOOL_OPTIONS
     total = max(2, len(options))
 
+    interaction = blocked_msg.get("interaction")
+    if isinstance(interaction, dict) or blocked_msg.get("question_layout"):
+        question = interaction.get("question") if isinstance(interaction, dict) else command
+        return {
+            "title": f"{project} needs answers",
+            "body": f"{compact_text(question, 160)} · {host}",
+            "tag": f"herdr-{host}-{pane_id}",
+            "url": notification_target_url(host, pane_id, event_id),
+            "actions": [],
+            "action_urls": {},
+        }
+
     return {
         "title": f"{project} blocked",
         "body": f"{command} · {host}",
@@ -1291,7 +1803,10 @@ async def publish_blocked(blocked_msg):
 
 async def publish_agent_blocked(agent):
     pane_id = agent.get("pane_id", "")
-    content = await asyncio.to_thread(read_pane, pane_id) or agent.get("prompt", "Agent is blocked")
+    raw_content = await asyncio.to_thread(read_question_pane, pane_id)
+    interaction = parse_question(raw_content, agent.get("agent", ""))
+    content = pane_summary(raw_content) or agent.get("prompt", "Agent is blocked")
+    has_question_layout = question_layout_hint(raw_content)
     await publish_blocked({
         "type": "blocked",
         "pane_id": pane_id,
@@ -1303,8 +1818,10 @@ async def publish_agent_blocked(agent):
         "tab_number": agent.get("tab_number"),
         "workspace_id": agent.get("workspace_id", ""),
         "prompt": content[:500],
-        "command": detect_command_context(content),
-        "options": detect_options(content) or TOOL_OPTIONS,
+        "command": interaction["question"] if interaction else detect_command_context(content),
+        "options": [] if interaction or has_question_layout else detect_options(content) or TOOL_OPTIONS,
+        "interaction": public_question_interaction(interaction),
+        "question_layout": has_question_layout,
     })
 
 
@@ -1435,6 +1952,8 @@ async def poll_loop():
         finished_notification_panes.intersection_update(live_pane_ids)
         agent_types.clear()
         agent_types.update({a["pane_id"]: str(a.get("agent") or "").lower() for a in agents})
+        for pane_id in set(question_locks) - live_pane_ids:
+            question_locks.pop(pane_id, None)
         for pane_id in set(claude_history_state) - live_pane_ids:
             discard_claude_history_state(pane_id)
         for pane_id in set(claude_history_capture_times) - live_pane_ids:
@@ -1811,6 +2330,552 @@ async def wait_for_approval_result(pane_id, timeout=5.0):
     return False, "blocked"
 
 
+async def read_current_question(pane_id):
+    content = await run_herdr_async(
+        "pane", "read", pane_id,
+        "--lines", "80",
+        "--source", "recent-unwrapped",
+        "--format", "ansi",
+    )
+    return content or "", parse_question(content or "", agent_types.get(pane_id, ""))
+
+
+def question_navigation_keys(interaction, target):
+    option_count = interaction.get("_all_option_count", 0)
+    focus_kind, focus_index = interaction.get("_focus", ("option", 0))
+    is_multi = interaction.get("kind") == "multi_select"
+
+    def position(kind, index=0):
+        if kind == "option":
+            return index
+        if kind == "submit" and is_multi:
+            return option_count
+        if kind == "chat":
+            return option_count + (1 if is_multi else 0)
+        return 0
+
+    current_position = position(focus_kind, focus_index)
+    target_position = position(target[0], target[1] if len(target) > 1 else 0)
+    distance = target_position - current_position
+    if distance > 0:
+        return ["Down"] * distance
+    if distance < 0:
+        return ["Up"] * -distance
+    return []
+
+
+async def send_question_keys(pane_id, keys):
+    if not keys:
+        return True, ""
+    # Agent question TUIs can drop later events when several
+    # navigation keys and Enter arrive in one Herdr request. Deliver each key
+    # separately and leave one render interval between them so Enter acts on
+    # the focus row the relay intended.
+    for index, key in enumerate(keys):
+        ok, _output, error = await run_herdr_async_result(
+            "pane", "send-keys", pane_id, key
+        )
+        if not ok:
+            return False, error
+        if index + 1 < len(keys):
+            await asyncio.sleep(QUESTION_KEY_DELAY)
+    return True, ""
+
+
+async def wait_for_question_state(pane_id, interaction_id, predicate, timeout=2.5):
+    """Wait until the live question frame satisfies ``predicate``."""
+    deadline = time.monotonic() + timeout
+    latest = None
+    while time.monotonic() < deadline:
+        content, latest = await read_current_question(pane_id)
+        if latest and latest["id"] != interaction_id:
+            return None, "The question changed while applying the answer"
+        if latest and predicate(latest):
+            return latest, ""
+        if not latest and not question_layout_hint(content):
+            return None, "The agent closed the question while applying the answer"
+        await asyncio.sleep(0.1)
+    return latest, "The agent did not apply the requested question change"
+
+
+async def move_question_focus(pane_id, interaction, target):
+    """Move to a question row and confirm the cursor actually arrived there."""
+    latest = interaction
+    for _attempt in range(3):
+        if latest.get("_focus") == target:
+            return latest, ""
+        keys = question_navigation_keys(latest, target)
+        if not keys:
+            break
+        ok, error = await send_question_keys(pane_id, keys)
+        if not ok:
+            return latest, error
+        latest, error = await wait_for_question_state(
+            pane_id,
+            interaction["id"],
+            lambda current: current.get("_focus") == target,
+        )
+        if not error:
+            return latest, ""
+        if latest is None:
+            return None, error
+    return latest, "The agent did not move to the requested question row"
+
+
+def question_option_selected(interaction, index):
+    if index == interaction.get("_all_option_count", 0) - 1:
+        return bool(interaction.get("other", {}).get("selected"))
+    return any(
+        option.get("index") == index and option.get("selected")
+        for option in interaction.get("options", [])
+    )
+
+
+async def set_question_option(pane_id, interaction, index, selected):
+    """Set one checkbox through Claude's documented cursor/Enter controls."""
+    target = ("option", index)
+    latest, error = await move_question_focus(pane_id, interaction, target)
+    if error:
+        return latest, error
+    if question_option_selected(latest, index) == selected:
+        return latest, ""
+    ok, error = await send_question_keys(pane_id, ["Enter"])
+    if not ok:
+        return latest, error
+    return await wait_for_question_state(
+        pane_id,
+        interaction["id"],
+        lambda current: question_option_selected(current, index) == selected,
+    )
+
+
+async def set_question_other_text(pane_id, interaction, text):
+    option_count = interaction["_all_option_count"]
+    target = ("option", option_count - 1)
+    latest, error = await move_question_focus(pane_id, interaction, target)
+    if error or latest.get("other", {}).get("text", "") == text:
+        return latest, error
+
+    # Herdr accepts Ctrl+U but not Home/End. Claude's custom-answer row handles
+    # Ctrl+U directly while focused, so replace the value without unsupported
+    # cursor keys.
+    ok, error = await send_question_keys(pane_id, ["Ctrl+U"])
+    if not ok:
+        return latest, error
+    if text:
+        ok, _output, error = await run_herdr_async_result(
+            "pane", "send-text", pane_id, text
+        )
+        if not ok:
+            return latest, error
+    return await wait_for_question_state(
+        pane_id,
+        interaction["id"],
+        lambda current: current.get("other", {}).get("text", "") == text,
+    )
+
+
+async def wait_for_question_transition(pane_id, interaction_id, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    latest = None
+    nonblocked_samples = 0
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.3)
+        agents = await asyncio.to_thread(get_agents)
+        if agents is None:
+            continue
+        agent = next((item for item in agents if item.get("pane_id") == pane_id), None)
+        if not agent:
+            return "confirmed", None, "closed"
+        status = str(agent.get("status") or "unknown").lower()
+        content, latest = await read_current_question(pane_id)
+        if question_review_visible(content):
+            return "review", None, status
+        if latest and latest["id"] != interaction_id:
+            return "advanced", latest, status
+        if status != "blocked":
+            nonblocked_samples += 1
+            if nonblocked_samples >= 2 and not latest:
+                return "confirmed", None, status
+            continue
+        nonblocked_samples = 0
+        if not latest and not question_layout_hint(content):
+            return "confirmed", None, status
+    return "stuck", latest, "blocked"
+
+
+def validate_question_answer(msg, interaction):
+    selected = msg.get("selected_indices", [])
+    other_text = msg.get("other_text", "")
+    other_selected = msg.get("other_selected", bool(other_text))
+    if (
+        not isinstance(selected, list)
+        or not isinstance(other_text, str)
+        or not isinstance(other_selected, bool)
+    ):
+        return None, None, None, "Invalid question answer"
+    if len(other_text) > 20000:
+        return None, None, None, "Other answer is longer than 20,000 characters"
+    if any(isinstance(index, bool) or not isinstance(index, int) for index in selected):
+        return None, None, None, "Invalid question selection"
+    selected = sorted(set(selected))
+    if any(index < 0 or index >= len(interaction["options"]) for index in selected):
+        return None, None, None, "Question selection is no longer available"
+    if other_text and not other_selected:
+        return None, None, None, "Other text must be selected"
+    other_is_choice = other_selected and (
+        bool(other_text.strip()) or interaction.get("other", {}).get("allow_empty") is True
+    )
+    if interaction["kind"] == "single_select" and len(selected) + bool(other_is_choice) != 1:
+        return None, None, None, "Choose one answer or enter an Other answer"
+    return selected, other_selected, other_text, ""
+
+
+async def execute_codex_question_answer(
+    pane_id, interaction, selected, other_selected, other_text
+):
+    latest = interaction
+    if selected:
+        if latest.get("_notes_active"):
+            ok, error = await send_question_keys(pane_id, ["Escape"])
+            if not ok:
+                return False, error
+            latest, error = await wait_for_question_state(
+                pane_id,
+                interaction["id"],
+                lambda current: not current.get("_notes_active"),
+            )
+            if error:
+                return False, error
+        _latest, error = await move_question_focus(
+            pane_id, latest, ("option", selected[0])
+        )
+        if error:
+            return False, error
+        return await send_question_keys(pane_id, ["Enter"])
+
+    other_index = latest["_all_option_count"] - 1
+    if not latest.get("_notes_active"):
+        latest, error = await move_question_focus(
+            pane_id, latest, ("option", other_index)
+        )
+        if error:
+            return False, error
+    if not other_text:
+        return await send_question_keys(pane_id, ["Enter"])
+
+    if not latest.get("_notes_active"):
+        ok, error = await send_question_keys(pane_id, ["Tab"])
+        if not ok:
+            return False, error
+        latest, error = await wait_for_question_state(
+            pane_id,
+            interaction["id"],
+            lambda current: current.get("_notes_active") is True,
+        )
+        if error:
+            return False, error
+    ok, error = await send_question_keys(pane_id, ["Ctrl+U"])
+    if not ok:
+        return False, error
+    ok, _output, error = await run_herdr_async_result(
+        "pane", "send-text", pane_id, other_text
+    )
+    if not ok:
+        return False, error
+    latest, error = await wait_for_question_state(
+        pane_id,
+        interaction["id"],
+        lambda current: current.get("other", {}).get("text", "") == other_text,
+    )
+    if error:
+        return False, error
+    return await send_question_keys(pane_id, ["Enter"])
+
+
+async def execute_question_answer(pane_id, interaction, selected, other_selected, other_text):
+    if interaction.get("_agent") == "codex":
+        return await execute_codex_question_answer(
+            pane_id, interaction, selected, other_selected, other_text
+        )
+    if interaction["kind"] == "single_select":
+        if selected:
+            _latest, error = await move_question_focus(
+                pane_id, interaction, ("option", selected[0])
+            )
+            if error:
+                return False, error
+            return await send_question_keys(pane_id, ["Enter"])
+        _latest, error = await set_question_other_text(
+            pane_id, interaction, other_text
+        )
+        if error:
+            return False, error
+        return await send_question_keys(pane_id, ["Enter"])
+
+    latest = interaction
+    for option in interaction["options"]:
+        index = option["index"]
+        desired = index in selected
+        if question_option_selected(latest, index) == desired:
+            continue
+        latest, error = await set_question_option(
+            pane_id, latest, index, desired
+        )
+        if error:
+            return False, error
+
+    if latest.get("other", {}).get("text", "") != other_text:
+        latest, error = await set_question_other_text(
+            pane_id, latest, other_text
+        )
+        if error:
+            return False, error
+    other_index = latest["_all_option_count"] - 1
+    if question_option_selected(latest, other_index) != other_selected:
+        latest, error = await set_question_option(
+            pane_id, latest, other_index, other_selected
+        )
+        if error:
+            return False, error
+
+    latest, error = await move_question_focus(
+        pane_id, latest, ("submit", 0)
+    )
+    if error:
+        return False, error
+    return await send_question_keys(pane_id, ["Enter"])
+
+
+async def finish_question_command(ws, msg, agent, interaction):
+    request_id = request_id_for(msg)
+    pane_id = agent["pane_id"]
+    transition, next_interaction, status = await wait_for_question_transition(
+        pane_id, interaction["id"]
+    )
+    if transition == "review":
+        ok, error = await send_question_keys(pane_id, ["Enter"])
+        if not ok:
+            await complete_command(
+                ws, request_id, "question", False, "Question answer failed",
+                error=error, pane_id=pane_id, agent=agent.get("agent", ""),
+                project=agent.get("project", ""),
+            )
+            return
+        confirmed, status = await wait_for_approval_result(pane_id)
+        transition = "confirmed" if confirmed else "stuck"
+
+    if transition == "advanced":
+        await complete_command(
+            ws, request_id, "question", True, "Answered question",
+            pane_id=pane_id, agent=agent.get("agent", ""),
+            project=agent.get("project", ""), phase="advanced",
+            data={"interaction": public_question_interaction(next_interaction)},
+            details=command_details(msg, {"resulting_status": status}),
+        )
+        return
+    if transition == "confirmed":
+        await complete_command(
+            ws, request_id, "question", True, "Submitted answers",
+            pane_id=pane_id, agent=agent.get("agent", ""),
+            project=agent.get("project", ""), phase="confirmed",
+            details=command_details(msg, {"resulting_status": status}),
+        )
+        return
+
+    await complete_command(
+        ws, request_id, "question", False, "Question answer was not confirmed",
+        error="The agent did not advance; review the current question before retrying",
+        pane_id=pane_id, agent=agent.get("agent", ""),
+        project=agent.get("project", ""),
+        data={"interaction": public_question_interaction(next_interaction)},
+    )
+
+
+async def handle_answer_question_command(ws, msg):
+    request_id = request_id_for(msg)
+    pane_id = msg.get("pane_id", "")
+    interaction_id = msg.get("interaction_id", "")
+    if not pane_id or not isinstance(interaction_id, str) or not interaction_id:
+        await complete_command(
+            ws, request_id, "question", False, "Question answer failed",
+            error="Agent and question are required", pane_id=pane_id,
+        )
+        return
+
+    lock = question_locks.setdefault(pane_id, asyncio.Lock())
+    async with lock:
+        agent, error = await asyncio.to_thread(agent_for_pane, pane_id)
+        if error:
+            await complete_command(ws, request_id, "question", False, "Question answer failed", error=error, pane_id=pane_id)
+            return
+        if not supports_structured_questions(agent.get("agent", "")):
+            await complete_command(
+                ws, request_id, "question", False, "Question answer skipped",
+                error="The agent is no longer waiting for this answer", pane_id=pane_id,
+                agent=agent.get("agent", ""), project=agent.get("project", ""),
+            )
+            return
+
+        _content, interaction = await read_current_question(pane_id)
+        if not interaction or interaction["id"] != interaction_id:
+            await complete_command(
+                ws, request_id, "question", False, "Question answer skipped",
+                error="The question changed; review it before submitting",
+                pane_id=pane_id, agent=agent.get("agent", ""), project=agent.get("project", ""),
+                data={"interaction": public_question_interaction(interaction)},
+            )
+            return
+        selected, other_selected, other_text, error = validate_question_answer(msg, interaction)
+        if error:
+            await complete_command(
+                ws, request_id, "question", False, "Question answer failed",
+                error=error, pane_id=pane_id, agent=agent.get("agent", ""),
+                project=agent.get("project", ""),
+                data={"interaction": public_question_interaction(interaction)},
+            )
+            return
+
+        ok, error = await execute_question_answer(
+            pane_id, interaction, selected, other_selected, other_text
+        )
+        if not ok:
+            await complete_command(
+                ws, request_id, "question", False, "Question answer failed",
+                error=error, pane_id=pane_id, agent=agent.get("agent", ""), project=agent.get("project", ""),
+            )
+            return
+        await send_command_result(ws, request_id, "question", True, phase="accepted", pane_id=pane_id)
+        await finish_question_command(ws, msg, agent, interaction)
+
+
+async def handle_navigate_question_command(ws, msg):
+    request_id = request_id_for(msg)
+    pane_id = msg.get("pane_id", "")
+    interaction_id = msg.get("interaction_id", "")
+    direction = msg.get("direction", "")
+    if (
+        not pane_id
+        or not isinstance(interaction_id, str)
+        or not interaction_id
+        or direction != "previous"
+    ):
+        await complete_command(
+            ws, request_id, "question", False, "Question navigation failed",
+            error="Agent, question, and previous direction are required",
+            pane_id=pane_id,
+        )
+        return
+
+    lock = question_locks.setdefault(pane_id, asyncio.Lock())
+    async with lock:
+        agent, error = await asyncio.to_thread(agent_for_pane, pane_id)
+        if error:
+            await complete_command(
+                ws, request_id, "question", False, "Question navigation failed",
+                error=error, pane_id=pane_id,
+            )
+            return
+        content, interaction = await read_current_question(pane_id)
+        if (
+            not supports_structured_questions(agent.get("agent", ""))
+            or not interaction
+            or interaction["id"] != interaction_id
+            or not interaction.get("_can_go_back")
+        ):
+            await complete_command(
+                ws, request_id, "question", False, "Question navigation skipped",
+                error="There is no previous question to open",
+                pane_id=pane_id, agent=agent.get("agent", ""),
+                project=agent.get("project", ""),
+                data={"interaction": public_question_interaction(interaction)}
+                if question_layout_hint(content) else None,
+            )
+            return
+
+        ok, error = await send_question_keys(pane_id, ["Left"])
+        if not ok:
+            await complete_command(
+                ws, request_id, "question", False, "Question navigation failed",
+                error=error, pane_id=pane_id, agent=agent.get("agent", ""),
+                project=agent.get("project", ""),
+            )
+            return
+        await send_command_result(
+            ws, request_id, "question", True, phase="accepted", pane_id=pane_id
+        )
+        transition, previous_interaction, status = await wait_for_question_transition(
+            pane_id, interaction["id"]
+        )
+        if transition == "advanced" and previous_interaction:
+            await complete_command(
+                ws, request_id, "question", True, "Opened previous question",
+                pane_id=pane_id, agent=agent.get("agent", ""),
+                project=agent.get("project", ""), phase="navigated",
+                data={
+                    "interaction": public_question_interaction(previous_interaction)
+                },
+                details=command_details(msg, {"resulting_status": status}),
+            )
+            return
+        await complete_command(
+            ws, request_id, "question", False, "Question navigation failed",
+            error="The agent did not open the previous question",
+            pane_id=pane_id, agent=agent.get("agent", ""),
+            project=agent.get("project", ""),
+            data={"interaction": public_question_interaction(previous_interaction)},
+        )
+
+
+async def handle_clarify_question_command(ws, msg):
+    request_id = request_id_for(msg)
+    pane_id = msg.get("pane_id", "")
+    interaction_id = msg.get("interaction_id", "")
+    if not pane_id or not isinstance(interaction_id, str) or not interaction_id:
+        await complete_command(
+            ws, request_id, "question", False, "Chat failed",
+            error="Agent and question are required", pane_id=pane_id,
+        )
+        return
+    lock = question_locks.setdefault(pane_id, asyncio.Lock())
+    async with lock:
+        agent, error = await asyncio.to_thread(agent_for_pane, pane_id)
+        if error:
+            await complete_command(ws, request_id, "question", False, "Chat failed", error=error, pane_id=pane_id)
+            return
+        content, interaction = await read_current_question(pane_id)
+        if (
+            "claude" not in str(agent.get("agent") or "").lower()
+            or not interaction
+            or interaction["id"] != interaction_id
+            or not interaction.get("can_chat")
+        ):
+            await complete_command(
+                ws, request_id, "question", False, "Chat skipped",
+                error="This question can no longer be discussed",
+                pane_id=pane_id, agent=agent.get("agent", ""), project=agent.get("project", ""),
+                data={"interaction": public_question_interaction(interaction)} if question_layout_hint(content) else None,
+            )
+            return
+        keys = question_navigation_keys(interaction, ("chat", 0)) + ["Enter"]
+        ok, error = await send_question_keys(pane_id, keys)
+        if not ok:
+            await complete_command(
+                ws, request_id, "question", False, "Chat failed", error=error,
+                pane_id=pane_id, agent=agent.get("agent", ""), project=agent.get("project", ""),
+            )
+            return
+        await send_command_result(ws, request_id, "question", True, phase="accepted", pane_id=pane_id)
+        transition, _next, status = await wait_for_question_transition(pane_id, interaction["id"])
+        ok = transition == "confirmed"
+        await complete_command(
+            ws, request_id, "question", ok, "Opened question chat",
+            error="Claude Code did not open question chat" if not ok else "",
+            pane_id=pane_id, agent=agent.get("agent", ""), project=agent.get("project", ""),
+            phase="confirmed", details=command_details(msg, {"resulting_status": status}),
+        )
+
+
 async def handle_respond_command(ws, msg):
     request_id = request_id_for(msg)
     pane_id = msg.get("pane_id")
@@ -1832,6 +2897,17 @@ async def handle_respond_command(ws, msg):
         return
     if str(agent.get("status") or "").lower() != "blocked":
         await complete_command(ws, request_id, "approval", False, "Approval skipped", error="Agent is no longer blocked", pane_id=pane_id, agent=agent.get("agent", ""), project=agent.get("project", ""))
+        return
+
+    content = ""
+    if supports_structured_questions(agent.get("agent", "")):
+        content = await asyncio.to_thread(read_question_pane, pane_id)
+    if question_layout_hint(content):
+        await complete_command(
+            ws, request_id, "approval", False, "Approval skipped",
+            error="Use the question form to submit this answer",
+            pane_id=pane_id, agent=agent.get("agent", ""), project=agent.get("project", ""),
+        )
         return
 
     keys = respond_keys(index, total)
@@ -2115,7 +3191,13 @@ async def handle_client(ws):
             if msg_type in MUTATING_MESSAGE_TYPES and not client_protocol_matches(msg):
                 await reject_incompatible_client_protocol(ws, msg)
                 continue
-            if msg_type == "respond":
+            if msg_type == "answer_question":
+                await handle_answer_question_command(ws, msg)
+            elif msg_type == "navigate_question":
+                await handle_navigate_question_command(ws, msg)
+            elif msg_type == "clarify_question":
+                await handle_clarify_question_command(ws, msg)
+            elif msg_type == "respond":
                 await handle_respond_command(ws, msg)
             elif msg_type == "push_subscribe":
                 ok = await asyncio.to_thread(
@@ -2156,13 +3238,32 @@ async def handle_client(ws):
                     "--source", "recent-unwrapped",
                     "--format", fmt,
                 )
+                question_content = content or ""
+                pane_agent_type = agent_types.get(pane_id, "")
+                interaction = parse_question(question_content, pane_agent_type)
+                if (
+                    interaction is None
+                    and last_statuses.get(pane_id) == "blocked"
+                    and supports_structured_questions(pane_agent_type)
+                ):
+                    question_content, interaction = await read_current_question(pane_id)
+                has_question_layout = question_layout_hint(question_content)
                 if fmt == "ansi" and "claude" in agent_types.get(pane_id, ""):
-                    state = load_claude_history_state(pane_id)
-                    if state is not None and last_statuses.get(pane_id) not in {"working", "blocked"}:
-                        content = claude_history_content(state, lines)
-                    else:
-                        content = merge_claude_history(pane_id, content, lines)
-                await safe_send_json(ws, {"type": "pane_content", "pane_id": pane_id, "content": content or "", "format": fmt})
+                    content = claude_content_for_client(
+                        pane_id,
+                        content,
+                        lines,
+                        last_statuses.get(pane_id),
+                        has_question_layout,
+                    )
+                await safe_send_json(ws, {
+                    "type": "pane_content",
+                    "pane_id": pane_id,
+                    "content": content or "",
+                    "format": fmt,
+                    "interaction": public_question_interaction(interaction),
+                    "question_layout": has_question_layout,
+                })
             elif msg_type == "acknowledge_pane":
                 pane_id = msg.get("pane_id", "")
                 if not pane_id or pane_id not in agent_types:

@@ -172,6 +172,29 @@ body[data-view="terminal"] #manageButton { display: block; }
 .quick-actions { padding: 6px 8px; border-top: 1px solid var(--border); display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; background: var(--surface); }
 .quick-actions:empty { display: none; }
 .quick-actions button { padding: 8px 12px; min-height: 40px; border-radius: 8px; border: none; font-size: 0.72rem; font-weight: 700; cursor: pointer; flex: 1; min-width: 70px; }
+.quick-actions:has(.question-form) { display: block; padding: 0; }
+.question-form { max-height: min(48dvh, 430px); overflow-y: auto; padding: 12px; background: var(--surface); }
+.question-form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.question-form legend { width: 100%; padding: 0 0 10px; color: var(--text); font-size: 0.82rem; font-weight: 700; line-height: 1.35; }
+.question-choice { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 8px; padding: 9px 8px; margin-bottom: 5px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+.question-choice:has(input:checked) { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 12%, transparent); }
+.question-choice input { width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--blue); }
+.question-choice-copy { min-width: 0; }
+.question-choice-label { display: block; color: var(--text); font-size: 0.78rem; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere; }
+.question-choice-description { display: block; margin-top: 3px; color: var(--muted); font-size: 0.68rem; line-height: 1.35; overflow-wrap: anywhere; }
+.question-other { margin-top: 8px; }
+.question-other-row { display: flex; gap: 8px; align-items: center; }
+.question-other-row input[type="radio"], .question-other-row input[type="checkbox"] { width: 20px; height: 20px; flex: 0 0 20px; accent-color: var(--blue); }
+.question-other-label { flex: 0 0 auto; color: var(--text); font-size: 0.74rem; }
+.question-other-input { width: 100%; min-height: 42px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-family: inherit; font-size: 0.76rem; line-height: 1.3; }
+.question-other-input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+.question-form-actions { display: flex; gap: 8px; margin-top: 12px; }
+.question-form-actions button { min-height: 44px; }
+.question-submit { background: var(--green); color: #050505; }
+.question-submit:disabled { opacity: 0.4; cursor: default; }
+.question-back { background: transparent; color: var(--text); border: 1px solid var(--border) !important; }
+.question-chat { background: transparent; color: var(--blue); border: 1px solid var(--border) !important; }
+.question-form-status { min-height: 1em; margin-top: 7px; color: var(--muted); font-size: 0.66rem; }
 .btn-yes { background: var(--green); color: #000; } .btn-trust { background: var(--blue); color: #fff; } .btn-no { background: var(--red); color: #fff; } .btn-next { background: var(--surface); color: var(--blue); border: 1px solid var(--border) !important; }
 .term-input { position: relative; z-index: 1; border-top: 1px solid var(--border); padding: 6px 8px; display: flex; gap: 6px; background: var(--surface); flex-shrink: 0; align-items: flex-end; }
 .composer-field { position: relative; flex: 1; min-width: 0; }
@@ -191,6 +214,7 @@ body[data-view="terminal"] #manageButton { display: block; }
 .upload-status.active { display: block; }
 .upload-status.error { color: var(--red); }
 .terminal-view.has-quick-actions .term-keys { display: none; }
+.terminal-view.has-question .term-input, .terminal-view.has-question .term-keys { display: none; }
 .term-keys { position: relative; z-index: 2; border-top: 1px solid var(--border); padding: 4px 8px; display: flex; gap: 5px; background: var(--surface); flex-shrink: 0; padding-bottom: max(4px, env(safe-area-inset-bottom, 0px)); align-items: center; overflow: visible; }
 .term-keys button { padding: 8px 11px; min-height: 40px; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; }
 .term-keys button:active { background: var(--border); }
@@ -226,7 +250,7 @@ body[data-view="terminal"] #manageButton { display: block; }
 }
 @media (pointer: fine) {
   .term-keys .arrow-toggle { display: none; }
-  .quick-actions button { flex: none; min-width: auto; padding: 8px 18px; }
+  .quick-actions > button { flex: none; min-width: auto; padding: 8px 18px; }
 }
 </style>
 </head>
@@ -434,10 +458,10 @@ const COMMAND_TIMEOUT_MS = 15000;
 const SW_SCRIPT_URL = 'sw.js?v=7';
 const PUSH_CLIENT_KEY = 'herdr_push_client_id';
 const PUSH_VAPID_KEY_PREFIX = 'herdr_push_vapid_key_';
-// Version 1 is the existing positional approval protocol. Bump only when a
-// WebSocket message changes incompatibly, together with PROTOCOL_VERSION in
-// relay/herdr_relay.py. Unversioned relays implement this v1 baseline.
-const APP_PROTOCOL_VERSION = 1;
+// Version 2 adds staged Claude Code question answers. Bump together with
+// PROTOCOL_VERSION in relay/herdr_relay.py when mutations change incompatibly.
+// Unversioned relays implement the v1 positional-approval baseline.
+const APP_PROTOCOL_VERSION = 2;
 const ANSI_COLORS = {
   30: '#555', 31: '#ff5f5f', 32: '#5fd75f', 33: '#ffd75f',
   34: '#5fafff', 35: '#d75fff', 36: '#1abc9c', 37: '#e5e5e5',
@@ -449,6 +473,7 @@ importQuickSetup();
 let securityLocked = false, unlockInProgress = false, pendingConnectAll = false;
 let lastBlockedPaneIds = new Set();
 let respondingPaneIds = new Set();
+let questionDrafts = new Map();
 let blockedSnapshotMisses = new Map();
 let serviceWorkerRegistration = null;
 let pushServiceWorkerRegistrations = new Map();
@@ -1414,7 +1439,7 @@ function showAgentListView() {
   document.getElementById('settingsView').style.display = 'none';
   document.getElementById('launchView').style.display = 'none';
   document.getElementById('activityView').style.display = 'none';
-  document.getElementById('terminalView').classList.remove('active', 'has-quick-actions');
+  document.getElementById('terminalView').classList.remove('active', 'has-quick-actions', 'has-question');
   document.getElementById('agentListView').style.display = '';
 }
 
@@ -1424,7 +1449,7 @@ function showSettingsView() {
   activePaneSnapshot = null;
   clearInterval(refreshInterval);
   updateAppChrome('Settings');
-  document.getElementById('terminalView').classList.remove('active', 'has-quick-actions');
+  document.getElementById('terminalView').classList.remove('active', 'has-quick-actions', 'has-question');
   document.getElementById('agentListView').style.display = 'none';
   document.getElementById('launchView').style.display = 'none';
   document.getElementById('activityView').style.display = 'none';
@@ -1440,7 +1465,7 @@ function showLaunchView() {
   activePaneSnapshot = null;
   clearInterval(refreshInterval);
   updateAppChrome('Start Agent');
-  document.getElementById('terminalView').classList.remove('active', 'has-quick-actions');
+  document.getElementById('terminalView').classList.remove('active', 'has-quick-actions', 'has-question');
   document.getElementById('agentListView').style.display = 'none';
   document.getElementById('settingsView').style.display = 'none';
   document.getElementById('activityView').style.display = 'none';
@@ -1454,7 +1479,7 @@ function showActivityView() {
   activePaneSnapshot = null;
   clearInterval(refreshInterval);
   updateAppChrome('Activity');
-  document.getElementById('terminalView').classList.remove('active', 'has-quick-actions');
+  document.getElementById('terminalView').classList.remove('active', 'has-quick-actions', 'has-question');
   document.getElementById('agentListView').style.display = 'none';
   document.getElementById('settingsView').style.display = 'none';
   document.getElementById('launchView').style.display = 'none';
@@ -1741,7 +1766,14 @@ function handleMessage(relayId, msg) {
     const next = normalizeAgent(relayId, {...msg, status: 'blocked'});
     blockedSnapshotMisses.delete(next.pane_id);
     const a = agents.find(x => x.pane_id === next.pane_id);
-    if (a) Object.assign(a, mergeAgentDetails(a, {...next, prompt: msg.prompt, command: msg.command, options: msg.options}));
+    if (a) Object.assign(a, mergeAgentDetails(a, {
+      ...next,
+      prompt: msg.prompt,
+      command: msg.command,
+      options: msg.options,
+      interaction: msg.interaction,
+      question_layout: msg.question_layout,
+    }));
     else agents.push(next);
     respondingPaneIds.delete(next.pane_id);
     lastAgentsSignature = agentsSignature(agents);
@@ -1759,6 +1791,12 @@ function handleMessage(relayId, msg) {
     syncActiveTerminal();
     resolvePendingNotificationTarget();
   } else if (msg.type === 'pane_content' && clientPaneId(relayId, msg.pane_id) === activePane) {
+    const agent = activeAgent();
+    if (mergePaneContentInteraction(agent, msg)) {
+      lastAgentsSignature = agentsSignature(agents);
+      render();
+      syncActiveTerminal();
+    }
     updateTerminalContent(msg.content || '(empty)', msg.format);
   }
 }
@@ -1831,7 +1869,47 @@ function mergeAgentDetails(previous, next) {
     prompt: keepBlockedDetails ? (next.prompt ?? previous.prompt) : next.prompt,
     command: keepBlockedDetails ? (next.command ?? previous.command) : next.command,
     options: keepBlockedDetails ? (next.options ?? previous.options) : next.options,
+    // A null parse from one blocked-event snapshot is not authoritative for a
+    // structured question. Confirmed agent status owns removal, just as it
+    // does for ordinary approval buttons.
+    interaction: keepBlockedDetails ? (next.interaction || previous.interaction) : next.interaction,
+    question_layout: keepBlockedDetails ? (next.question_layout || previous.question_layout) : next.question_layout,
   };
+}
+
+function mergePaneContentInteraction(agent, msg) {
+  if (!agent || !Object.prototype.hasOwnProperty.call(msg, 'interaction')) return false;
+  const interaction = msg.interaction || null;
+  const questionLayout = Boolean(msg.question_layout || interaction);
+  const previous = JSON.stringify([
+    agentStatusGroup(agent),
+    agent.interaction || null,
+    Boolean(agent.question_layout),
+  ]);
+
+  if (questionLayout) {
+    blockedSnapshotMisses.delete(agent.pane_id);
+    agent.status = 'blocked';
+    agent.interaction = interaction || agent.interaction || null;
+    agent.question_layout = true;
+  } else if (agentStatusGroup(agent) !== 'blocked') {
+    // Claude redraws its question UI in several terminal writes. Missing form
+    // markup is therefore not evidence that a blocked question ended. Keep
+    // the last semantic form until the same stabilized status transition that
+    // removes ordinary approval buttons confirms the agent moved on.
+    agent.interaction = null;
+    agent.question_layout = false;
+  } else {
+    return false;
+  }
+
+  const next = JSON.stringify([
+    agentStatusGroup(agent),
+    agent.interaction || null,
+    Boolean(agent.question_layout),
+  ]);
+  if (previous === next) return false;
+  return true;
 }
 
 function removeAgentsForRelay(relayId) {
@@ -1848,7 +1926,8 @@ function removeAgentsForRelay(relayId) {
 function agentsSignature(list) {
   return JSON.stringify(list.map(a => [
     a.relay_id, a.pane_id, a.raw_pane_id, a.tab_id, a.tab_label, a.tab_number,
-    a.agent, a.name, a.status, a.project, a.cwd, a.host, a.updated_at, a.prompt, a.command, a.options
+    a.agent, a.name, a.status, a.project, a.cwd, a.host, a.updated_at,
+    a.prompt, a.command, a.options, a.interaction, a.question_layout
   ]));
 }
 
@@ -2027,8 +2106,17 @@ function isNearWhiteAnsiColor(color) {
   return Math.min(...channels) >= 220 && Math.max(...channels) - Math.min(...channels) <= 40;
 }
 
+function isNearBlackAnsiColor(color) {
+  const channels = ansiColorChannels(color);
+  return Boolean(channels && Math.max(...channels) <= 40);
+}
+
 function normalizedAnsiBackground(color, normalizeNearWhite) {
   return normalizeNearWhite && isNearWhiteAnsiColor(color) ? CODEX_DARK_ROW_BACKGROUND : color;
+}
+
+function normalizedAnsiForeground(color, normalizeNearBlack) {
+  return normalizeNearBlack && isNearBlackAnsiColor(color) ? 'var(--terminal-text)' : color;
 }
 
 function ansi256Color(index) {
@@ -2063,7 +2151,7 @@ function ansiStyleName(name) {
 // Mirror it so the phone matches the laptop.
 const ANSI_HEADING_ACCENT = '#3daee9';
 
-function ansiToHtml(text, normalizeNearWhiteBackground = false) {
+function ansiToHtml(text, normalizeNearWhiteBackground = false, normalizeNearBlackForeground = false) {
   let html = '', open = false, styles = {};
   const parts = text.split(/\x1b\[([0-9;]*)m/g);
   for (let i = 0; i < parts.length; i++) {
@@ -2102,12 +2190,14 @@ function ansiToHtml(text, normalizeNearWhiteBackground = false) {
           consumed = 2;
         }
         if (color) {
-          if (code === 38) styles.color = color;
+          if (code === 38) styles.color = normalizedAnsiForeground(color, normalizeNearBlackForeground);
           else styles.backgroundColor = normalizedAnsiBackground(color, normalizeNearWhiteBackground);
           j += consumed;
         }
       }
-      else if (ANSI_COLORS[code]) styles.color = ANSI_COLORS[code];
+      else if (ANSI_COLORS[code]) {
+        styles.color = normalizedAnsiForeground(ANSI_COLORS[code], normalizeNearBlackForeground);
+      }
       else if (ANSI_COLORS[code - 10]) {
         styles.backgroundColor = normalizedAnsiBackground(ANSI_COLORS[code - 10], normalizeNearWhiteBackground);
       }
@@ -2251,10 +2341,11 @@ function terminalHtml(text, normalizeCodexLightRows = false, restoreClaudeHeadin
     }
     const sourceBackground = backgrounds[index];
     const normalizeRow = normalizeCodexLightRows && isNearWhiteAnsiColor(sourceBackground);
+    const normalizeClaudeDarkText = restoreClaudeHeadings && !sourceBackground;
     const backgroundColor = normalizedAnsiBackground(sourceBackground, normalizeRow);
     const backgroundClass = backgroundColor ? ' ansi-line-background' : '';
     const backgroundStyle = backgroundColor ? ` style="${ansiLineBackgroundStyle(line, backgroundColor)}"` : '';
-    return `<span class="ansi-line${backgroundClass}"${backgroundStyle}>${ansiToHtml(trimAnsiLineEnd(line), normalizeRow)}</span>`;
+    return `<span class="ansi-line${backgroundClass}"${backgroundStyle}>${ansiToHtml(trimAnsiLineEnd(line), normalizeRow, normalizeClaudeDarkText)}</span>`;
   }).join('');
 }
 
@@ -2446,6 +2537,7 @@ function markPaneResponding(paneId) {
 function approvalOptions(agent) {
   const opts = Array.isArray(agent && agent.options) ? agent.options.filter(Boolean) : [];
   if (opts.length) return opts;
+  if (agent && agent.question_layout) return [];
   if (agentStatusGroup(agent) === 'blocked') return ['yes, single permission','trust, always allow','no (tab to edit)'];
   return [];
 }
@@ -2493,6 +2585,159 @@ function approvalPromptPreview(agent) {
   return commandFallback || fallback;
 }
 
+function questionInteraction(agent) {
+  const interaction = agent && agent.interaction;
+  if (!interaction || typeof interaction !== 'object') return null;
+  if (!['single_select', 'multi_select'].includes(interaction.kind)) return null;
+  if (!interaction.id || !interaction.question || !Array.isArray(interaction.options)) return null;
+  return interaction;
+}
+
+function questionDraftKey(agent, interaction) {
+  return `${agent.pane_id}::${interaction.id}`;
+}
+
+function discardQuestionDraftsForPane(paneId, keepInteractionId = '') {
+  const keepKey = keepInteractionId ? `${paneId}::${keepInteractionId}` : '';
+  for (const key of questionDrafts.keys()) {
+    if (key.startsWith(`${paneId}::`) && key !== keepKey) questionDrafts.delete(key);
+  }
+}
+
+function questionDraftFor(agent, interaction = questionInteraction(agent)) {
+  if (!agent || !interaction) return null;
+  const key = questionDraftKey(agent, interaction);
+  let draft = questionDrafts.get(key);
+  if (draft) return draft;
+  draft = {
+    selected: new Set(interaction.options.filter(option => option && option.selected).map(option => option.index)),
+    otherSelected: Boolean(interaction.other && interaction.other.selected),
+    otherText: String(interaction.other && interaction.other.text || ''),
+  };
+  questionDrafts.set(key, draft);
+  return draft;
+}
+
+function questionSubmitAllowed(interaction, draft) {
+  if (!interaction || !draft) return false;
+  if (interaction.kind === 'multi_select') return true;
+  const otherAllowed = draft.otherSelected && (
+    Boolean(draft.otherText.trim()) || Boolean(interaction.other && interaction.other.allow_empty)
+  );
+  return draft.selected.size === 1 || otherAllowed;
+}
+
+function questionFormHtml(agent) {
+  const interaction = questionInteraction(agent);
+  const draft = questionDraftFor(agent, interaction);
+  if (!interaction || !draft) return '';
+  const isMulti = interaction.kind === 'multi_select';
+  const inputType = isMulti ? 'checkbox' : 'radio';
+  const inputName = isMulti ? '' : ' name="question-answer"';
+  const disabled = respondingPaneIds.has(agent.pane_id);
+  const choices = interaction.options.map((option, position) => {
+    const index = Number.isInteger(option.index) ? option.index : position;
+    const checked = draft.selected.has(index) ? ' checked' : '';
+    const description = normalizeInlineText(option.description);
+    const descriptionId = `question-description-${index}`;
+    const describedBy = description ? ` aria-describedby="${descriptionId}"` : '';
+    return `<label class="question-choice">
+      <input type="${inputType}"${inputName} value="${index}"${checked}${describedBy} onchange="updateQuestionOption(${index}, this.checked)">
+      <span class="question-choice-copy"><span class="question-choice-label">${escapeHtml(option.label || `Option ${position + 1}`)}</span>${description ? `<span class="question-choice-description" id="${descriptionId}">${escapeHtml(description)}</span>` : ''}</span>
+    </label>`;
+  }).join('');
+  const otherType = isMulti ? 'checkbox' : 'radio';
+  const otherName = isMulti ? '' : ' name="question-answer"';
+  const otherChecked = draft.otherSelected ? ' checked' : '';
+  const otherLabel = normalizeInlineText(interaction.other && interaction.other.label) || 'Other';
+  const otherPlaceholder = normalizeInlineText(interaction.other && interaction.other.placeholder) || 'Other answer';
+  const submitLabel = interaction.submit_label || 'Submit';
+  const submitDisabled = disabled || !questionSubmitAllowed(interaction, draft);
+  return `<form class="question-form" onsubmit="submitQuestion(event)" aria-busy="${disabled}">
+    <fieldset${disabled ? ' disabled' : ''}>
+      <legend>${escapeHtml(interaction.question)}</legend>
+      ${choices}
+      <div class="question-other">
+        <div class="question-other-row">
+          <input id="questionOtherToggle" type="${otherType}"${otherName}${otherChecked} onchange="updateQuestionOtherSelected(this.checked)" aria-label="${escapeHtml(otherLabel)}">
+          <label class="question-other-label" for="questionOtherToggle">${escapeHtml(otherLabel)}</label>
+          <input id="questionOtherInput" class="question-other-input" type="text" maxlength="20000" value="${escapeHtml(draft.otherText)}" placeholder="${escapeHtml(otherPlaceholder)}" aria-label="${escapeHtml(otherPlaceholder)}" autocomplete="on" onfocus="selectQuestionOther()" oninput="updateQuestionOtherText(this.value)" onblur="handleComposerBlur()">
+        </div>
+      </div>
+    </fieldset>
+    <div class="question-form-actions">
+      ${interaction.can_go_back ? '<button class="question-back" type="button" onclick="navigateQuestionPrevious()"' + (disabled ? ' disabled' : '') + '>← Previous</button>' : ''}
+      <button class="question-submit" id="questionSubmitButton" type="submit"${submitDisabled ? ' disabled' : ''}>${escapeHtml(submitLabel)}</button>
+      ${interaction.can_chat ? '<button class="question-chat" type="button" onclick="clarifyQuestion()"' + (disabled ? ' disabled' : '') + '>Chat about this</button>' : ''}
+    </div>
+    <div class="question-form-status" aria-live="polite">${disabled ? 'Waiting for agent…' : isMulti ? 'Selections are sent together when you submit.' : 'Choose one answer.'}</div>
+  </form>`;
+}
+
+function updateQuestionFormState() {
+  const agent = activeAgent();
+  const interaction = questionInteraction(agent);
+  const draft = questionDraftFor(agent, interaction);
+  if (!interaction || !draft) return;
+  const submit = document.getElementById('questionSubmitButton');
+  if (submit) submit.disabled = respondingPaneIds.has(agent.pane_id) || !questionSubmitAllowed(interaction, draft);
+  const otherToggle = document.getElementById('questionOtherToggle');
+  if (otherToggle) otherToggle.checked = draft.otherSelected;
+  const qa = document.getElementById('quickActions');
+  if (qa) qa.dataset.html = questionFormHtml(agent);
+}
+
+function updateQuestionOption(index, checked) {
+  const agent = activeAgent();
+  const interaction = questionInteraction(agent);
+  const draft = questionDraftFor(agent, interaction);
+  if (!interaction || !draft) return;
+  if (interaction.kind === 'single_select') {
+    draft.selected.clear();
+    if (checked) draft.selected.add(index);
+    draft.otherSelected = false;
+    draft.otherText = '';
+    const otherInput = document.getElementById('questionOtherInput');
+    if (otherInput) otherInput.value = '';
+  } else if (checked) draft.selected.add(index);
+  else draft.selected.delete(index);
+  updateQuestionFormState();
+}
+
+function updateQuestionOtherSelected(checked) {
+  const agent = activeAgent();
+  const interaction = questionInteraction(agent);
+  const draft = questionDraftFor(agent, interaction);
+  if (!interaction || !draft) return;
+  draft.otherSelected = checked;
+  if (interaction.kind === 'single_select' && checked) draft.selected.clear();
+  if (interaction.kind === 'multi_select' && !checked) {
+    draft.otherText = '';
+    const input = document.getElementById('questionOtherInput');
+    if (input) input.value = '';
+  }
+  updateQuestionFormState();
+}
+
+function selectQuestionOther() {
+  const toggle = document.getElementById('questionOtherToggle');
+  if (toggle && !toggle.checked) {
+    toggle.checked = true;
+    updateQuestionOtherSelected(true);
+  }
+}
+
+function updateQuestionOtherText(value) {
+  const agent = activeAgent();
+  const interaction = questionInteraction(agent);
+  const draft = questionDraftFor(agent, interaction);
+  if (!interaction || !draft) return;
+  draft.otherText = String(value || '');
+  draft.otherSelected = interaction.kind === 'single_select' ? true : Boolean(draft.otherText);
+  if (interaction.kind === 'single_select') draft.selected.clear();
+  updateQuestionFormState();
+}
+
 function render() {
   const listView = document.getElementById('agentListView');
   const previousScrollTop = listView.scrollTop;
@@ -2538,9 +2783,15 @@ function section(title, color, list, hollow = false) {
 
 function blockedCardDetails(agent, paneArg) {
   if (agentStatusGroup(agent) !== 'blocked') return '';
-  const preview = approvalPromptPreview(agent);
+  const interaction = questionInteraction(agent);
+  const preview = interaction ? interaction.question : approvalPromptPreview(agent);
   const previewHtml = preview ? `<div class="prompt-preview">${escapeHtml(preview)}</div>` : '';
   if (respondingPaneIds.has(agent.pane_id)) return previewHtml;
+  if (interaction) {
+    const count = interaction.options.length;
+    const label = interaction.kind === 'multi_select' ? `Choose options (${count})` : `Choose answer (${count})`;
+    return `${previewHtml}<div class="agent-actions"><button type="button" class="btn-trust" onclick='event.stopPropagation(); openTerminal(${paneArg})'>${label}</button></div>`;
+  }
   const opts = approvalOptions(agent);
   const total = opts.length;
   const buttons = opts.map((option, index) => {
@@ -2592,7 +2843,10 @@ function renderTerminalActions(agent) {
   const next = nextBlockedAgent(agent);
   const nextAction = next ? `<button type="button" class="btn-next" onclick='openNextBlocked(${escapeHtml(JSON.stringify(next.pane_id))})'>Next blocked →</button>` : '';
   let html = '';
-  if (agent && agentStatusGroup(agent) === 'blocked' && !respondingPaneIds.has(agent.pane_id)) {
+  const interaction = agent && agentStatusGroup(agent) === 'blocked' ? questionInteraction(agent) : null;
+  if (interaction) {
+    html = questionFormHtml(agent);
+  } else if (agent && agentStatusGroup(agent) === 'blocked' && !respondingPaneIds.has(agent.pane_id)) {
     const opts = approvalOptions(agent);
     const total = opts.length;
     const actions = opts.map((option, index) => {
@@ -2610,8 +2864,10 @@ function renderTerminalActions(agent) {
   const view = document.getElementById('terminalView');
   const wantClass = Boolean(html);
   const classChanged = view.classList.contains('has-quick-actions') !== wantClass;
-  if (!classChanged && qa.dataset.html === html) return;
+  const questionClassChanged = view.classList.contains('has-question') !== Boolean(interaction);
+  if (!classChanged && !questionClassChanged && qa.dataset.html === html) return;
   view.classList.toggle('has-quick-actions', wantClass);
+  view.classList.toggle('has-question', Boolean(interaction));
   if (qa.dataset.html !== html) {
     qa.dataset.html = html;
     qa.innerHTML = html;
@@ -2623,7 +2879,7 @@ function clearQuickActions() {
   const qa = document.getElementById('quickActions');
   qa.dataset.html = '';
   qa.innerHTML = '';
-  document.getElementById('terminalView').classList.remove('has-quick-actions');
+  document.getElementById('terminalView').classList.remove('has-quick-actions', 'has-question');
   updateBottomChromeHeight();
 }
 
@@ -2965,7 +3221,11 @@ function handleCommandResult(relayId, msg) {
   clearTimeout(pending.timer);
   pendingRequests.delete(msg.request_id);
   if (msg.ok) pending.resolve(msg);
-  else pending.reject(new Error(msg.error || 'Command failed'));
+  else {
+    const error = new Error(msg.error || 'Command failed');
+    error.data = msg.data;
+    pending.reject(error);
+  }
 }
 
 function rejectPendingRequestsForRelay(relayId, message) {
@@ -3322,7 +3582,8 @@ function composerPromptText(input) {
 }
 function composerHasFocus(){
   const i=document.getElementById('termInput');
-  return Boolean(i&&document.activeElement===i);
+  const questionInput=document.getElementById('questionOtherInput');
+  return Boolean((i&&document.activeElement===i)||(questionInput&&document.activeElement===questionInput));
 }
 function handleComposerBlur(){
   const frame=pendingTerminalFrame;
@@ -3447,6 +3708,139 @@ function toggleArrows(event){
   document.getElementById('arrowPopup').classList.toggle('show');
 }
 function hideArrows(){document.getElementById('arrowPopup').classList.remove('show');}
+function setQuestionResponding(agent, responding) {
+  if (!agent) return;
+  if (responding) respondingPaneIds.add(agent.pane_id);
+  else respondingPaneIds.delete(agent.pane_id);
+  render();
+  syncActiveTerminal();
+}
+function applyQuestionInteraction(agent, interaction, resetDraft = false) {
+  if (!agent) return;
+  blockedSnapshotMisses.delete(agent.pane_id);
+  if (resetDraft) {
+    if (interaction) questionDrafts.delete(questionDraftKey(agent, interaction));
+    else discardQuestionDraftsForPane(agent.pane_id);
+  }
+  agent.interaction = interaction || null;
+  agent.question_layout = Boolean(interaction);
+  if (interaction) {
+    agent.status = 'blocked';
+  } else {
+    discardQuestionDraftsForPane(agent.pane_id);
+  }
+  lastAgentsSignature = agentsSignature(agents);
+  render();
+  syncActiveTerminal();
+}
+async function navigateQuestionPrevious() {
+  const agent = activeAgent();
+  const interaction = questionInteraction(agent);
+  if (!agent || !interaction || !interaction.can_go_back) return;
+  setQuestionResponding(agent, true);
+  try {
+    const result = await sendCommand(agent.relay_id, {
+      type: 'navigate_question',
+      pane_id: agent.raw_pane_id,
+      interaction_id: interaction.id,
+      direction: 'previous',
+      source: 'App',
+    }, 20000);
+    respondingPaneIds.delete(agent.pane_id);
+    if (result.phase === 'navigated' && result.data && result.data.interaction) {
+      applyQuestionInteraction(agent, result.data.interaction);
+      showToast('Opened the previous question.');
+    } else {
+      render();
+      syncActiveTerminal();
+    }
+  } catch (error) {
+    respondingPaneIds.delete(agent.pane_id);
+    if (error.data && error.data.interaction) {
+      applyQuestionInteraction(agent, error.data.interaction);
+    } else {
+      render();
+      syncActiveTerminal();
+    }
+    showToast(error.message, true);
+  } finally {
+    setTimeout(refreshPane, 400);
+  }
+}
+async function submitQuestion(event) {
+  if (event) event.preventDefault();
+  const agent = activeAgent();
+  const interaction = questionInteraction(agent);
+  const draft = questionDraftFor(agent, interaction);
+  if (!agent || !interaction || !draft || !questionSubmitAllowed(interaction, draft)) {
+    showToast('Complete the current question before submitting.', true);
+    return;
+  }
+  setQuestionResponding(agent, true);
+  try {
+    const result = await sendCommand(agent.relay_id, {
+      type: 'answer_question',
+      pane_id: agent.raw_pane_id,
+      interaction_id: interaction.id,
+      selected_indices: [...draft.selected].sort((a, b) => a - b),
+      other_selected: draft.otherSelected,
+      other_text: draft.otherText,
+      source: 'App',
+    }, 20000);
+    respondingPaneIds.delete(agent.pane_id);
+    if (result.phase === 'advanced' && result.data && result.data.interaction) {
+      applyQuestionInteraction(agent, result.data.interaction);
+      showToast('Answer saved. Continue with the next question.');
+    } else {
+      agent.status = 'working';
+      applyQuestionInteraction(agent, null);
+      showToast('Answers submitted.');
+    }
+  } catch (error) {
+    respondingPaneIds.delete(agent.pane_id);
+    if (error.data && error.data.interaction) {
+      // Claude may have accepted some checkbox/navigation keys before a later
+      // key failed. Rebuild the draft from the freshly parsed terminal state
+      // instead of leaving the overlay out of sync with Claude.
+      applyQuestionInteraction(agent, error.data.interaction, true);
+    } else {
+      render();
+      syncActiveTerminal();
+    }
+    showToast(error.message, true);
+  } finally {
+    setTimeout(refreshPane, 400);
+  }
+}
+async function clarifyQuestion() {
+  const agent = activeAgent();
+  const interaction = questionInteraction(agent);
+  if (!agent || !interaction || !interaction.can_chat) return;
+  setQuestionResponding(agent, true);
+  try {
+    await sendCommand(agent.relay_id, {
+      type: 'clarify_question',
+      pane_id: agent.raw_pane_id,
+      interaction_id: interaction.id,
+      source: 'App',
+    }, 20000);
+    respondingPaneIds.delete(agent.pane_id);
+    agent.status = 'working';
+    applyQuestionInteraction(agent, null);
+    showToast('Question chat opened.');
+  } catch (error) {
+    respondingPaneIds.delete(agent.pane_id);
+    if (error.data && error.data.interaction) {
+      applyQuestionInteraction(agent, error.data.interaction, true);
+    } else {
+      render();
+      syncActiveTerminal();
+    }
+    showToast(error.message, true);
+  } finally {
+    setTimeout(refreshPane, 400);
+  }
+}
 async function respondForAgent(agent,index,total,choice='',source='App'){
   if(!agent||typeof index!=='number'||index<0)return false;
   const label=choice||approvalOptions(agent)[index]||`option ${index+1}`;

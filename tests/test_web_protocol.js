@@ -20,12 +20,12 @@ this.relayVersionMeta = relayVersionMeta;
 this.relayProtocolError = relayProtocolError;
 `, sandbox);
 
-assert.equal(sandbox.APP_PROTOCOL_VERSION, 1);
-assert.equal(sandbox.relayProtocolError({protocol: 1}), '');
+assert.equal(sandbox.APP_PROTOCOL_VERSION, 2);
+assert.equal(sandbox.relayProtocolError({protocol: 2}), '');
 assert.match(sandbox.relayProtocolError({protocol: 0}), /Waiting for the relay protocol handshake/);
-assert.match(sandbox.relayProtocolError({protocol: 2}), /Incompatible relay protocol v2/);
-assert.equal(sandbox.relayVersionMeta({status: 'connected', protocol: 1, version: 'abc1234'}).label, 'relay abc1234');
-assert.match(sandbox.relayVersionMeta({status: 'connected', protocol: 2, version: 'future'}).label, /App outdated/);
+assert.match(sandbox.relayProtocolError({protocol: 1}), /Incompatible relay protocol v1/);
+assert.equal(sandbox.relayVersionMeta({status: 'connected', protocol: 2, version: 'abc1234'}).label, 'relay abc1234');
+assert.match(sandbox.relayVersionMeta({status: 'connected', protocol: 3, version: 'future'}).label, /App outdated/);
 
 assert.match(
   html,
@@ -34,6 +34,8 @@ assert.match(
 assert.match(html, /type: 'upload_image',[\s\S]*?protocol: APP_PROTOCOL_VERSION/);
 assert.match(html, /type: 'push_subscribe',[\s\S]*?protocol: APP_PROTOCOL_VERSION/);
 assert.match(html, /type: 'push_subscribe',[\s\S]*?notify_finished: finishedNotificationsEnabled\(\)/);
+assert.match(html, /type: 'answer_question',[\s\S]*?selected_indices:[\s\S]*?other_selected:/);
+assert.match(html, /type: 'navigate_question',[\s\S]*?direction: 'previous'/);
 assert.match(html, /id="finishedNotificationToggle"[\s\S]*?onchange="setFinishedNotificationsEnabled\(this\.checked\)"/);
 assert.match(serviceWorker, /const actions = Array\.isArray\(payload\.actions\)/);
 assert.match(serviceWorker, /actions,/);

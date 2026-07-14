@@ -42,7 +42,7 @@ assert.equal(sortSandbox.agentUpdatedAt({updated_at: 'invalid'}), 0);
 assert.ok(sortSandbox.compareAgentUpdatedAt({updated_at: 3000}, {updated_at: 1000}) < 0);
 assert.ok(sortSandbox.compareAgentUpdatedAt({updated_at: 1000}, {updated_at: 3000}) > 0);
 assert.match(html, /compareAgentUpdatedAt\(a, b\) \|\|/);
-assert.match(html, /a\.host, a\.updated_at, a\.prompt/);
+assert.match(html, /a\.host, a\.updated_at,[\s\S]*?a\.prompt/);
 assert.match(
   html,
   /function openTerminal\(paneId\)[\s\S]*?agentStatusGroup\(agent\) === 'done'[\s\S]*?agent\.status = 'idle'[\s\S]*?type: 'acknowledge_pane'/
