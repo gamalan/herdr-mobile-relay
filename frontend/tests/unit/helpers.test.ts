@@ -23,9 +23,12 @@ import {
 import {
   ansi256Color,
   ansiToHtml,
+  claudeMobileTerminalContent,
   compactRepeatedCharacterRuns,
   isSeparatorOnlyLine,
   lastCompletedResponse,
+  removeCodexDesktopInput,
+  removeClaudeStatusBlocks,
   renderTerminalContent,
   stripAnsi,
   TERMINAL_REPEATED_RUN_LIMIT,
@@ -170,6 +173,84 @@ describe('terminal rendering', () => {
       'Result text', '', TERMINAL_SEPARATOR_TOKEN, 'Opus 4.8 | ctx: 20%',
     ].join('\n'));
     expect(rendered.html.match(/class="term-separator"/g)).toHaveLength(1);
+  });
+
+  it('hides current multi-row Claude status blocks as one unit', () => {
+    const frame = [
+      'Answer remains visible.',
+      '› Try "fix typecheck errors"',
+      `${'─'.repeat(100)} Fable 5 |`,
+      '~/Development/sfdc/argenx-patient on infinitus-pa-',
+      'appeal-main | ctx -- | 5h 49% 7d 12% manual mode',
+      'on · PR #804 · ← 1 agent',
+    ].join('\n');
+    const hidden = removeClaudeStatusBlocks(frame);
+    expect(hidden).toContain('Answer remains visible.');
+    expect(hidden).toContain('Try "fix typecheck errors"');
+    expect(hidden).not.toContain('Fable 5');
+    expect(hidden).not.toContain('ctx --');
+    expect(hidden).not.toContain('PR #804');
+
+    const rendered = renderTerminalContent(frame, 'ansi', 'claude', false);
+    expect(stripAnsi(rendered.display)).toContain('Answer remains visible.');
+    expect(stripAnsi(rendered.display)).not.toContain('Fable 5');
+    expect(stripAnsi(rendered.display)).not.toContain('argenx-patient');
+    expect(stripAnsi(rendered.display)).not.toContain('ctx --');
+
+    const shown = renderTerminalContent(frame, 'ansi', 'claude', true);
+    expect(stripAnsi(shown.display)).toContain('Fable 5');
+    expect(stripAnsi(shown.display)).toContain('ctx --');
+
+    const unavailableContext = [
+      '› Try "edit Info.plist to..."',
+      `${'─'.repeat(80)} Opus 4.8 | ctx: - | main ~16 /rc ⏸ manual mode on · ← for agents`,
+    ].join('\n');
+    const hiddenUnavailable = renderTerminalContent(unavailableContext, 'ansi', 'claude', false);
+    expect(stripAnsi(hiddenUnavailable.display)).toContain('edit Info.plist');
+    expect(stripAnsi(hiddenUnavailable.display)).not.toContain('Opus 4.8');
+    expect(stripAnsi(hiddenUnavailable.display)).not.toContain('ctx: -');
+    expect(stripAnsi(hiddenUnavailable.display)).not.toContain('manual mode');
+  });
+
+  it('separates Claude conversation output from desktop prompt and status chrome', () => {
+    const footer = [
+      '❯ Try "edit Info.plist to..."',
+      'separator',
+      'Opus 4.8',
+      'ctx: -',
+      'main ~16',
+      '/rc ⏸ manual mode on · ← for agents',
+    ];
+    const content = [...Array.from({ length: 8 }, (_, index) => `output ${index + 1}`), ...footer].join('\n');
+
+    const hidden = claudeMobileTerminalContent(content, false);
+    expect(hidden.separated).toBe(true);
+    expect(hidden.content).toContain('output 8');
+    expect(hidden.content).not.toContain('Try "edit Info.plist');
+    expect(hidden.content).not.toContain('Opus 4.8');
+
+    const shown = claudeMobileTerminalContent(content, true);
+    expect(shown.separated).toBe(true);
+    expect(shown.content).not.toContain('Try "edit Info.plist');
+    expect(shown.content).not.toContain('separator');
+    expect(shown.content).toContain('Opus 4.8');
+    expect(shown.content).toContain('manual mode');
+  });
+
+  it('removes the final styled Codex desktop input block regardless of its placeholder', () => {
+    const backgroundRow = '\x1b[48;2;61;64;64m                    \x1b[0m';
+    const promptRow = (text: string) => `\x1b[1;48;2;61;64;64m›\x1b[0m\x1b[2;48;2;61;64;64m ${text}\x1b[0m`;
+    const status = 'gpt-5.6-sol xhigh · ~/project · main · Context 30% used';
+    const content = [
+      'Completed output', '', backgroundRow, promptRow('Review the current diff'), backgroundRow, status,
+    ].join('\n');
+    expect(stripAnsi(removeCodexDesktopInput(content))).toBe(`Completed output\n\n${status}`);
+    expect(stripAnsi(renderTerminalContent(content, 'ansi', 'codex', true).display))
+      .not.toContain('Review the current diff');
+
+    const transcript = `${promptRow('Historical prompt')}\nActual response`;
+    expect(removeCodexDesktopInput(transcript)).toBe(transcript);
+    expect(removeCodexDesktopInput('› Normal transcript text')).toBe('› Normal transcript text');
   });
 
   it('extracts the latest completed Codex and Claude responses', () => {

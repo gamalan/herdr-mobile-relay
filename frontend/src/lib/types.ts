@@ -141,6 +141,8 @@ export interface TerminalFrame {
   paneId: string;
   content: string;
   format: string;
+  desktopFooterLines?: number;
+  desktopPromptLines?: number;
 }
 
 export interface ToastMessage {

@@ -83,6 +83,7 @@ ACTIVITY_MAX_ITEMS = 500
 ACTIVITY_LOCK = threading.RLock()
 CLAUDE_HISTORY_MAX_LINES = 500
 CLAUDE_HISTORY_FOOTER_LINES = 6
+CLAUDE_DESKTOP_PROMPT_LINES = 2
 CLAUDE_HISTORY_CAPTURE_INTERVAL = 4.0
 CLAUDE_HISTORY_DIR = Path.home() / ".cache" / "herdr-mobile-relay" / "claude-history"
 CLAUDE_HISTORY_SAVE_INTERVAL = 10.0
@@ -627,6 +628,15 @@ def split_claude_snapshot(snapshot):
     if len(snapshot) <= CLAUDE_HISTORY_FOOTER_LINES * 2:
         return snapshot, []
     return snapshot[:-CLAUDE_HISTORY_FOOTER_LINES], snapshot[-CLAUDE_HISTORY_FOOTER_LINES:]
+
+
+def terminal_chrome_metadata(agent_type, fmt, question_active=False):
+    if fmt != "ansi" or "claude" not in str(agent_type or "").lower() or question_active:
+        return {}
+    return {
+        "desktop_footer_lines": CLAUDE_HISTORY_FOOTER_LINES,
+        "desktop_prompt_lines": CLAUDE_DESKTOP_PROMPT_LINES,
+    }
 
 
 def claude_history_content(state, limit=CLAUDE_HISTORY_MAX_LINES):
@@ -4006,14 +4016,16 @@ async def handle_client(ws):
                         last_statuses.get(pane_id),
                         has_question_layout,
                     )
-                await safe_send_json(ws, {
+                pane_payload = {
                     "type": "pane_content",
                     "pane_id": pane_id,
                     "content": content or "",
                     "format": fmt,
                     "interaction": public_question_interaction(interaction),
                     "question_layout": has_question_layout,
-                })
+                }
+                pane_payload.update(terminal_chrome_metadata(pane_agent_type, fmt, has_question_layout))
+                await safe_send_json(ws, pane_payload)
             elif msg_type == "acknowledge_pane":
                 pane_id = msg.get("pane_id", "")
                 if not pane_id or pane_id not in agent_types:

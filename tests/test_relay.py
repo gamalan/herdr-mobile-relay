@@ -407,6 +407,15 @@ Production-like verification.
         self.assertEqual(content, live)
         merge.assert_not_called()
 
+    def test_terminal_chrome_metadata_describes_claude_desktop_footer(self):
+        self.assertEqual(relay.terminal_chrome_metadata("claude", "ansi"), {
+            "desktop_footer_lines": 6,
+            "desktop_prompt_lines": 2,
+        })
+        self.assertEqual(relay.terminal_chrome_metadata("codex", "ansi"), {})
+        self.assertEqual(relay.terminal_chrome_metadata("claude", "text"), {})
+        self.assertEqual(relay.terminal_chrome_metadata("claude", "ansi", question_active=True), {})
+
     def test_relay_version_marks_a_modified_checkout_dirty(self):
         results = [
             SimpleNamespace(returncode=0, stdout="abc1234\n"),

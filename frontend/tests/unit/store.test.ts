@@ -85,6 +85,21 @@ describe('relay command store', () => {
     expect(agents.map((agent) => agent.project).sort()).toEqual(['Fedora app', 'Mac app']);
   });
 
+  it('preserves relay-provided desktop footer metadata on terminal frames', () => {
+    const socket = MockWebSocket.instances.at(-1)!;
+    const relayId = get(relayStore.relayConfigs)[0].id;
+    socket.message({
+      type: 'pane_content', pane_id: 'w1:p1', content: 'output', format: 'ansi',
+      desktop_footer_lines: 6, desktop_prompt_lines: 2,
+    });
+
+    expect(get(relayStore.terminalFrames).get(`${relayId}::w1:p1`)).toMatchObject({
+      content: 'output',
+      desktopFooterLines: 6,
+      desktopPromptLines: 2,
+    });
+  });
+
   it('ignores late events from a socket that has already been replaced', async () => {
     const oldSocket = MockWebSocket.instances.at(-1)!;
     oldSocket.open();

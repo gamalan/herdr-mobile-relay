@@ -7,6 +7,8 @@ const ANSI_COLORS: Record<number, string> = {
 
 export const TERMINAL_SEPARATOR_TOKEN = '\uE000HERDR_SEPARATOR\uE000';
 export const TERMINAL_REPEATED_RUN_LIMIT = 24;
+export const CLAUDE_DESKTOP_FOOTER_LINES = 6;
+export const CLAUDE_DESKTOP_PROMPT_LINES = 2;
 const TERMINAL_REPEATED_RUN_TRIGGER = 32;
 const CODEX_DARK_ROW_BACKGROUND = 'rgb(61,64,64)';
 const ANSI_HEADING_ACCENT = '#3daee9';
@@ -66,14 +68,118 @@ export function isClaudeStatusLine(line: string): boolean {
   const clean = stripAnsi(line).replace(/\s+/g, ' ').trim();
   const model = /\b(claude|sonnet|opus|haiku|fable|mythos)\b/i.test(clean);
   const statusBar = /[·|•]/.test(clean) || /(^|\s)[.~]?\//.test(clean);
-  return /\bctx\s*:?\s*\d+%/i.test(clean) && (model || statusBar);
+  return /\bctx\s*:?\s*(?:\d+%|-+)/i.test(clean) && (model || statusBar);
+}
+
+function isClaudeStatusFragment(line: string): boolean {
+  const clean = stripAnsi(line).replace(/\s+/g, ' ').trim();
+  if (!clean) return false;
+  if (isClaudeStatusLine(clean)) return true;
+  if (/\b(claude|sonnet|opus|haiku|fable|mythos)\b/i.test(clean) && /[·|•]/.test(clean)) return true;
+  if (/(?:^|\s)[.~]?\/\S+/.test(clean) && (/\bon\b/i.test(clean) || /[·|•]/.test(clean))) return true;
+  if (/\b(?:5h|7d)\s*:?[ \t]*(?:\d+%|-+)/i.test(clean) && /[·|•]/.test(clean)) return true;
+  if (/\b(?:manual|plan)\s+mode\b/i.test(clean)) return true;
+  return /\bPR\s*#?\d+\b/i.test(clean) || /\b\d+\s+agents?\b/i.test(clean);
+}
+
+export function removeClaudeStatusBlocks(content: string): string {
+  const lines = String(content ?? '').split('\n');
+  const hidden = new Set<number>();
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!isClaudeStatusLine(lines[index])) continue;
+    hidden.add(index);
+    for (let offset = 1; offset <= 3 && index - offset >= 0; offset += 1) {
+      if (!isClaudeStatusFragment(lines[index - offset])) break;
+      hidden.add(index - offset);
+    }
+    for (let offset = 1; offset <= 3 && index + offset < lines.length; offset += 1) {
+      if (!isClaudeStatusFragment(lines[index + offset])) break;
+      hidden.add(index + offset);
+    }
+  }
+  return lines.filter((_line, index) => !hidden.has(index)).join('\n');
+}
+
+export function claudeMobileTerminalContent(
+  content: string,
+  showStatusLine: boolean,
+  footerLines = CLAUDE_DESKTOP_FOOTER_LINES,
+  promptLines = CLAUDE_DESKTOP_PROMPT_LINES,
+): { content: string; separated: boolean } {
+  const lines = String(content ?? '').split('\n');
+  const footerCount = Number.isInteger(footerLines) && footerLines > 0 ? footerLines : CLAUDE_DESKTOP_FOOTER_LINES;
+  const promptCount = Number.isInteger(promptLines) && promptLines >= 0
+    ? Math.min(promptLines, footerCount)
+    : CLAUDE_DESKTOP_PROMPT_LINES;
+  if (lines.length > footerCount * 2) {
+    const body = lines.slice(0, -footerCount);
+    const status = lines.slice(-footerCount + promptCount);
+    return {
+      content: [...body, ...(showStatusLine ? status : [])].join('\n'),
+      separated: true,
+    };
+  }
+
+  const tailStart = Math.max(0, lines.length - footerCount);
+  for (let index = lines.length - 2; index >= tailStart; index -= 1) {
+    if (!/^\s*[❯›]\s+\S/u.test(stripAnsi(lines[index]))) continue;
+    if (!lines.slice(index + 1).some(isClaudeStatusFragment)) continue;
+    return {
+      content: [...lines.slice(0, index), ...(showStatusLine ? lines.slice(index + 1) : [])].join('\n'),
+      separated: true,
+    };
+  }
+  return { content, separated: false };
+}
+
+export function removeCodexDesktopInput(content: string): string {
+  const lines = String(content ?? '').split('\n');
+  const tailStart = Math.max(0, lines.length - 8);
+  let statusIndex = -1;
+  for (let index = lines.length - 1; index >= tailStart; index -= 1) {
+    if (!isCodexStatusLine(lines[index])) continue;
+    statusIndex = index;
+    break;
+  }
+
+  let blockEnd = statusIndex >= 0 ? statusIndex - 1 : lines.length - 1;
+  while (blockEnd >= tailStart && !hasAnsiBackgroundStyle(lines[blockEnd])) {
+    if (stripAnsi(lines[blockEnd]).trim()) return content;
+    blockEnd -= 1;
+  }
+  if (blockEnd < tailStart) return content;
+
+  let blockStart = blockEnd;
+  while (blockStart > tailStart && hasAnsiBackgroundStyle(lines[blockStart - 1])) blockStart -= 1;
+  const hasPromptMarker = lines.slice(blockStart, blockEnd + 1)
+    .some((line) => /^\s*[❯›](?:\s|$)/u.test(stripAnsi(line)));
+  if (!hasPromptMarker) return content;
+  lines.splice(blockStart, blockEnd - blockStart + 1);
+  return lines.join('\n');
+}
+
+function hasAnsiBackgroundStyle(line: string): boolean {
+  for (const match of line.matchAll(/\x1b\[([0-9;]*)m/g)) {
+    const codes = match[1] ? match[1].split(';').map(Number) : [0];
+    for (let position = 0; position < codes.length; position += 1) {
+      const code = codes[position];
+      if (code === 48 || (code >= 40 && code <= 47) || (code >= 100 && code <= 107)) return true;
+      if (code !== 38) continue;
+      if (codes[position + 1] === 2) position += 4;
+      else if (codes[position + 1] === 5) position += 2;
+    }
+  }
+  return false;
 }
 
 export function terminalDisplayContent(content: unknown, showStatusLine: boolean, trimFrameEdges = false): string {
   const normalized = String(content ?? '').split('\n').map((line) => trimTerminalChrome(line, trimFrameEdges)).join('\n');
   const reflowed = reflowTerminalLines(normalized);
   if (showStatusLine) return reflowed;
-  return reflowed.split('\n').filter((line) => !isCodexStatusLine(line) && !isClaudeStatusLine(line)).join('\n');
+  const withoutClaudeStatus = trimFrameEdges ? removeClaudeStatusBlocks(reflowed) : reflowed;
+  return withoutClaudeStatus.split('\n')
+    .filter((line) => !isCodexStatusLine(line) && !isClaudeStatusLine(line))
+    .join('\n');
 }
 
 export function isSeparatorOnlyLine(line: string): boolean {
@@ -473,8 +579,9 @@ export function renderTerminalContent(
   showStatusLine: boolean,
 ): { display: string; html: string } {
   const claudeChrome = /\bclaude\b/i.test(agentType);
+  const mobileContent = /\bcodex\b/i.test(agentType) ? removeCodexDesktopInput(content) : content;
   const display = compactSeparatorLines(
-    terminalDisplayContent(content, showStatusLine, claudeChrome),
+    terminalDisplayContent(mobileContent, showStatusLine, claudeChrome),
     claudeChrome,
   );
   if (format !== 'ansi') {

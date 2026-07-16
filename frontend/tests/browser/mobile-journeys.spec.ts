@@ -257,6 +257,61 @@ test('keeps the active terminal open while a sleeping phone reconnects', async (
   await expect(page.getByRole('main', { name: 'Terminal for Resume app' })).toBeVisible();
 });
 
+test('removes the Claude desktop prompt and hides its structural status footer', async ({ page }) => {
+  await boot(page, [fedora]);
+  await expect.poll(() => socketCount(page)).toBe(1);
+  await handshake(page, 0);
+  await server(page, 0, {
+    type: 'agents',
+    agents: [{ pane_id: 'w1:p1', status: 'working', project: 'Wrapped status', agent: 'claude' }],
+  });
+  await page.getByRole('button', { name: 'Open Wrapped status on Fedora' }).click();
+  await server(page, 0, {
+    type: 'pane_content', pane_id: 'w1:p1', format: 'ansi',
+    content: [
+      ...Array.from({ length: 8 }, (_, index) => `Conversation output ${index + 1}`),
+      '❯ Try "edit Info.plist to..."',
+      '─'.repeat(100),
+      'Opus 4.8',
+      'ctx: -',
+      'main ~16',
+      '/rc ⏸ manual mode on · ← for agents',
+    ].join('\n'),
+    desktop_footer_lines: 6,
+    desktop_prompt_lines: 2,
+  });
+  const terminal = page.getByRole('log');
+  await expect(terminal).toContainText('Conversation output 8');
+  await expect(terminal).not.toContainText('edit Info.plist');
+  await expect(terminal).not.toContainText('Opus 4.8');
+  await expect(terminal).not.toContainText('ctx: -');
+  await expect(terminal).not.toContainText('manual mode');
+});
+
+test('removes the styled Codex desktop input from the mobile terminal', async ({ page }) => {
+  await boot(page, [fedora]);
+  await expect.poll(() => socketCount(page)).toBe(1);
+  await handshake(page, 0);
+  await server(page, 0, {
+    type: 'agents',
+    agents: [{ pane_id: 'w1:p1', status: 'idle', project: 'Codex placeholder', agent: 'codex' }],
+  });
+  await page.getByRole('button', { name: 'Open Codex placeholder on Fedora' }).click();
+  await server(page, 0, {
+    type: 'pane_content', pane_id: 'w1:p1', format: 'ansi',
+    content: [
+      'Completed output',
+      '\u001b[48;2;61;64;64m                    \u001b[0m',
+      '\u001b[1;48;2;61;64;64m›\u001b[0m\u001b[2;48;2;61;64;64m Review the current diff\u001b[0m',
+      '\u001b[48;2;61;64;64m                    \u001b[0m',
+      'gpt-5.6-sol xhigh · ~/project · main · Context 30% used',
+    ].join('\n'),
+  });
+  const terminal = page.getByRole('log');
+  await expect(terminal).toContainText('Completed output');
+  await expect(terminal).not.toContainText('Review the current diff');
+});
+
 test('discovers slash commands per terminal and fills them before sending', async ({ page }) => {
   await boot(page, [fedora]);
   await expect.poll(() => socketCount(page)).toBe(1);

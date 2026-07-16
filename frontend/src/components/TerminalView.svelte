@@ -12,7 +12,7 @@
   import { showAgentStatusLine } from '$lib/preferences';
   import { replaceView } from '$lib/router';
   import { relayStore } from '$lib/store';
-  import { lastCompletedResponse, renderTerminalContent } from '$lib/terminal';
+  import { claudeMobileTerminalContent, lastCompletedResponse, renderTerminalContent } from '$lib/terminal';
   import type { Agent, SlashCommand, SlashCommandCatalog, TerminalFrame } from '$lib/types';
 
   let {
@@ -113,7 +113,21 @@
   });
 
   async function applyFrame(next: TerminalFrame, statusLine = $showAgentStatusLine) {
-    const rendered = renderTerminalContent(next.content, next.format, String(agent.agent || ''), statusLine);
+    const agentType = String(agent.agent || '');
+    const mobileContent = /\bclaude\b/i.test(agentType)
+      ? claudeMobileTerminalContent(
+        next.content,
+        statusLine,
+        next.desktopFooterLines,
+        next.desktopPromptLines,
+      )
+      : { content: next.content, separated: false };
+    const rendered = renderTerminalContent(
+      mobileContent.content,
+      next.format,
+      agentType,
+      mobileContent.separated ? true : statusLine,
+    );
     if (rendered.display === displayed && next.format === lastFormat) return;
     const distance = terminalElement
       ? terminalElement.scrollHeight - terminalElement.scrollTop - terminalElement.clientHeight

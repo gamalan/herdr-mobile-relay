@@ -389,10 +389,18 @@ class RelayStore {
     }
     if (message.type === 'pane_content') {
       const paneId = clientPaneId(relayId, String(message.pane_id || ''));
+      const desktopFooterLines = Number(message.desktop_footer_lines);
+      const desktopPromptLines = Number(message.desktop_prompt_lines);
       this.terminalFramesValue.set(paneId, {
         paneId,
         content: String(message.content || '(empty)'),
         format: String(message.format || 'plain'),
+        desktopFooterLines: Number.isInteger(desktopFooterLines) && desktopFooterLines > 0
+          ? desktopFooterLines
+          : undefined,
+        desktopPromptLines: Number.isInteger(desktopPromptLines) && desktopPromptLines >= 0
+          ? desktopPromptLines
+          : undefined,
       });
       this.terminalFrames.set(new Map(this.terminalFramesValue));
       this.mergePaneInteraction(paneId, message);
