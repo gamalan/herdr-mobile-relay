@@ -658,6 +658,14 @@ test('refreshes agents on return home and preserves terminal behavior', async ({
   });
   await expect(terminal.locator('.ansi-line')).toHaveText(`${'.'.repeat(24)} [29%]`);
 
+  await server(page, 0, {
+    type: 'pane_content', pane_id: 'w1:p1', format: 'ansi',
+    content: '\u001b[48;2;250;250;250;38;2;20;20;20mMac light terminal\u001b[0m',
+  });
+  const normalizedMacRow = terminal.locator('.ansi-line', { hasText: 'Mac light terminal' });
+  await expect(normalizedMacRow).toHaveCSS('background-color', 'rgb(61, 64, 64)');
+  await expect(normalizedMacRow.locator('span')).toHaveCSS('color', 'rgb(236, 239, 244)');
+
   const composer = page.getByRole('combobox', { name: 'Prompt' });
   await composer.focus();
   await composer.fill('draft prompt');

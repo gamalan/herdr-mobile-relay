@@ -225,9 +225,14 @@ export function isNearWhiteAnsiColor(color: string): boolean {
   return Boolean(channels && Math.min(...channels) >= 220 && Math.max(...channels) - Math.min(...channels) <= 40);
 }
 
-function isNearBlackAnsiColor(color: string): boolean {
+function ansiRelativeLuminance(color: string): number | null {
   const channels = ansiColorChannels(color);
-  return Boolean(channels && Math.max(...channels) <= 40);
+  if (!channels) return null;
+  const linear = channels.map((channel) => {
+    const value = channel / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
 }
 
 function normalizedAnsiBackground(color: string, normalize: boolean): string {
@@ -235,7 +240,16 @@ function normalizedAnsiBackground(color: string, normalize: boolean): string {
 }
 
 function normalizedAnsiForeground(color: string, normalize: boolean): string {
-  return normalize && isNearBlackAnsiColor(color) ? 'var(--terminal-text)' : color;
+  if (!normalize) return color;
+  const channels = ansiColorChannels(color);
+  const luminance = ansiRelativeLuminance(color);
+  if (!channels || luminance === null) return color;
+  const spread = Math.max(...channels) - Math.min(...channels);
+  if (Math.max(...channels) <= 96 && spread <= 30) return 'var(--terminal-text)';
+  if (luminance < 0.14) {
+    return `color-mix(in srgb, ${color} 35%, var(--terminal-text))`;
+  }
+  return color;
 }
 
 export function ansi256Color(index: number): string {
@@ -432,7 +446,7 @@ export function ansiLineBackgrounds(lines: string[]): string[] {
 
 export function terminalHtml(
   text: string,
-  normalizeCodexLightRows = false,
+  normalizeLightPalette = false,
   restoreClaudeHeadings = false,
 ): string {
   let colored = restoreAgentActivityColors(text);
@@ -442,13 +456,13 @@ export function terminalHtml(
   return lines.map((line, index) => {
     if (line === TERMINAL_SEPARATOR_TOKEN) return '<span class="term-separator" aria-hidden="true"></span>';
     const sourceBackground = backgrounds[index];
-    const normalizeRow = normalizeCodexLightRows && isNearWhiteAnsiColor(sourceBackground);
-    const normalizeClaudeDarkText = restoreClaudeHeadings && !sourceBackground;
+    const normalizeRow = normalizeLightPalette && isNearWhiteAnsiColor(sourceBackground);
+    const normalizeDarkText = normalizeLightPalette && (!sourceBackground || normalizeRow);
     const background = normalizedAnsiBackground(sourceBackground, normalizeRow);
     const className = background ? ' ansi-line-background' : '';
     const style = background ? ` style="${ansiLineBackgroundStyle(line, background)}"` : '';
     // ansiToHtml escapes every text segment before it emits controlled span markup.
-    return `<span class="ansi-line${className}"${style}>${ansiToHtml(trimAnsiLineEnd(line), normalizeRow, normalizeClaudeDarkText)}</span>`;
+    return `<span class="ansi-line${className}"${style}>${ansiToHtml(trimAnsiLineEnd(line), normalizeRow, normalizeDarkText)}</span>`;
   }).join('');
 }
 
@@ -468,6 +482,6 @@ export function renderTerminalContent(
   }
   return {
     display,
-    html: terminalHtml(display, /\bcodex\b/i.test(agentType), /\bclaude\b/i.test(agentType)),
+    html: terminalHtml(display, true, /\bclaude\b/i.test(agentType)),
   };
 }

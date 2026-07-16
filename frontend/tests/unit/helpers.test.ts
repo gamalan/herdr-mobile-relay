@@ -84,6 +84,26 @@ describe('terminal rendering', () => {
     expect(renderTerminalContent('<script>alert(1)</script>', 'plain', 'codex', true).html).toBe('&lt;script&gt;alert(1)&lt;/script&gt;');
   });
 
+  it('normalizes light-origin ANSI colors onto the dark mobile terminal', () => {
+    const blackText = renderTerminalContent('\x1b[38;2;24;24;24mMac text\x1b[0m', 'ansi', 'codex', true);
+    expect(blackText.html).toContain('color:var(--terminal-text)');
+
+    const darkBlue = renderTerminalContent('\x1b[38;2;20;40;80mBlue text\x1b[0m', 'ansi', 'claude', true);
+    expect(darkBlue.html).toContain('color:color-mix(in srgb, rgb(20,40,80) 35%, var(--terminal-text))');
+
+    const lightRow = renderTerminalContent(
+      '\x1b[48;2;250;250;250;38;2;20;20;20mLight terminal row\x1b[0m',
+      'ansi',
+      'codex',
+      true,
+    );
+    expect(lightRow.html).toContain('background-color:rgb(61,64,64)');
+    expect(lightRow.html).toContain('color:var(--terminal-text)');
+
+    const brightAccent = renderTerminalContent('\x1b[38;2;95;175;255mAccent\x1b[0m', 'ansi', 'codex', true);
+    expect(brightAccent.html).toContain('color:rgb(95,175,255)');
+  });
+
   it('limits blank gaps and merges separator fragments across whitespace', () => {
     expect(isSeparatorOnlyLine('----------------')).toBe(true);
     expect(isSeparatorOnlyLine('————————')).toBe(true);
