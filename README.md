@@ -115,6 +115,41 @@ To install the PWA, open the HTTPS app in Safari and use **Share → Add to Home
 
 The relay never SSHs into another computer. Each relay invokes only fixed local Herdr operations and exposes only detected supported agent profiles.
 
+## Agent Profiles Configuration
+
+By default the relay detects Codex, Claude Code, and OpenCode. Additional agents (e.g. Pi) can be added with an INI file at `~/.config/herdr/agent-profiles.ini` (respects `$XDG_CONFIG_HOME`).
+
+```ini
+[profiles]
+codex = Codex
+claude = Claude Code
+opencode = OpenCode
+pi = Pi
+```
+
+- Keys in `[profiles]` are **merged** with the built-in defaults. You only need to add new agents or override existing labels.
+- Set `[config] replace_profiles = true` to replace instead of merge.
+- Each profile's binary must be on `PATH` for the relay to advertise it. Missing binaries print a warning.
+
+### Custom Slash-Command Suggestions
+
+For agents other than Claude Code and Codex, the relay discovers slash-command suggestions from skill directories. Add a `[skills]` section to configure per-agent paths:
+
+```ini
+[skills]
+pi = ~/.pi/agent/skills
+```
+
+- Keys match profile ids from `[profiles]`. Directories are scanned for `*/SKILL.md` frontmatter (`name`, `description`, optional `argument-hint`).
+- The first configured path is labelled **personal**; subsequent paths are **project**.
+- Paths are `:`-separated on macOS and Linux (``os.pathsep``). Directory names containing `:` are not supported.
+- Pi skills emit `/skill:<name>` (Pi's native syntax). Other agents use `/<name>`.
+- `user-invocable: false` in frontmatter hides a skill from suggestions.
+
+### Hot Reload
+
+Send `SIGHUP` to the relay process to re-read `agent-profiles.ini` without restarting. New client connections pick up the updated profiles; existing connections keep their already-received catalog. On the phone, the slash‑command cache is per agent + working directory, so switching directories fetches fresh suggestions.
+
 ## Security
 
 - Treat setup links, QR codes, relay URLs, and tokens as secrets.
