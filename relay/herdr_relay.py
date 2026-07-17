@@ -118,6 +118,18 @@ _DEFAULT_AGENT_PROFILE_CANDIDATES = {
     "opencode": "OpenCode",
 }
 
+# Default skill directories per agent profile id. These are used when the
+# INI config has no [skills] section or no entry for a particular agent.
+_DEFAULT_SKILL_DIRS = {
+    "pi": [
+        "~/.pi/agent/skills",
+    ],
+    "opencode": [
+        "~/.opencode/skills",
+        "~/.config/opencode/skills",
+    ],
+}
+
 _AGENT_PROFILES_INI = Path.home() / ".config" / "herdr" / "agent-profiles.ini"
 
 
@@ -1822,6 +1834,95 @@ def discover_claude_commands(cwd):
     return list(discovered.values()), truncated, hidden
 
 
+def _expand_skill_paths(paths):
+    """Expand ``~`` in each path string and return resolved strings."""
+    return [str(Path(p).expanduser()) for p in paths]
+
+
+def _agent_skill_dirs(agent_id):
+    """Return skill-directory paths for *agent_id* from the INI config.
+
+    Looks up the ``[skills]`` section in agent-profiles.ini. Keys match
+    profile ids; values are ````:-separated directory paths (``~`` is
+    expanded). When the section or key is absent, well-known defaults are
+    used. Returns an empty list when the agent has no configured skill
+    directories.
+    """
+    if not _AGENT_PROFILES_INI.is_file():
+        return _expand_skill_paths(_DEFAULT_SKILL_DIRS.get(agent_id, []))
+    try:
+        parser = configparser.ConfigParser()
+        parser.read_string(_AGENT_PROFILES_INI.read_text())
+    except (OSError, configparser.Error):
+        return _expand_skill_paths(_DEFAULT_SKILL_DIRS.get(agent_id, []))
+    if not parser.has_section("skills"):
+        return _expand_skill_paths(_DEFAULT_SKILL_DIRS.get(agent_id, []))
+    raw = parser.get("skills", agent_id, fallback="")
+    if not raw.strip():
+        return _expand_skill_paths(_DEFAULT_SKILL_DIRS.get(agent_id, []))
+    dirs = []
+    for token in raw.split(":"):
+        token = token.strip()
+        if not token:
+            continue
+        dirs.append(str(Path(token).expanduser()))
+    return dirs
+
+
+def discover_agent_skills(agent_id):
+    """Discover skills for a generic agent from its configured directories.
+
+    Scans each directory returned by ``_agent_skill_dirs()`` for
+    ``*/SKILL.md`` files with YAML frontmatter (``name``, ``description``,
+    optional ``argument-hint``). Returns a list of slash-command entries
+    and a truncated flag.
+    """
+    commands = []
+    scanned = 0
+    truncated = False
+    seen = set()
+    for directory in _agent_skill_dirs(agent_id):
+        dir_path = Path(directory)
+        if not dir_path.is_dir():
+            continue
+        try:
+            entries = sorted(dir_path.iterdir(), key=lambda p: (p.name.casefold(), p.name))
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name.startswith("."):
+                continue
+            skill_md = entry / "SKILL.md"
+            if not skill_md.is_file():
+                continue
+            if scanned >= SLASH_COMMAND_MAX_CUSTOM_FILES:
+                truncated = True
+                break
+            scanned += 1
+            metadata = markdown_frontmatter(skill_md)
+            if metadata is None:
+                continue
+            name = metadata.get("name")
+            if not isinstance(name, str) or not SLASH_COMMAND_NAME_RE.fullmatch(name):
+                continue
+            if not user_invocable(metadata):
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            description = metadata.get("description") or f"{name.capitalize()} skill"
+            commands.append(slash_command_entry(
+                name,
+                description,
+                metadata.get("argument-hint", ""),
+                "project",
+            ))
+        if truncated:
+            break
+    commands.sort(key=lambda entry: entry["command"].casefold())
+    return commands, truncated
+
+
 def slash_command_catalog(agent):
     agent_type = str(agent.get("agent") or "").casefold()
     if "claude" in agent_type:
@@ -1831,7 +1932,9 @@ def slash_command_catalog(agent):
         builtins = CODEX_SLASH_COMMANDS
         custom, truncated, hidden = [], False, set()
     else:
-        return {"commands": [], "truncated": False}
+        builtins = {}
+        custom, truncated = discover_agent_skills(agent_type)
+        hidden = set()
 
     commands = {
         name: slash_command_entry(name, description, argument_hint)
