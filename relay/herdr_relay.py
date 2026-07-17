@@ -3104,8 +3104,17 @@ async def place_started_agent(pane_id, workspace_id, label, cwd):
             "--new-workspace", "--label", workspace_label,
             "--tab-label", label, "--no-focus",
         )
-    ok, output, error = await run_herdr_async_result(*args)
-    return ok, parsed_herdr_output(output), error
+    # Newly started agents (especially Node.js-based ones like Pi) may not
+    # have their pane registered in Herdr yet when the start response
+    # arrives. Retry with backoff until the pane is visible.
+    for attempt in range(6):
+        ok, output, error = await run_herdr_async_result(*args)
+        if ok:
+            return ok, parsed_herdr_output(output), error
+        if "pane_not_found" not in str(error or "").lower() or attempt == 5:
+            return False, None, error
+        await asyncio.sleep(0.2 * (attempt + 1))
+    return False, None, error
 
 
 async def start_agent_in_new_tab(profile, name, cwd):

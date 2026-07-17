@@ -2253,11 +2253,12 @@ Production-like verification.
         with self._patch_ini_config(ini, base):
             relay._reload_agent_profiles_ini()
             self.assertIn("pi", relay.AGENT_PROFILE_CANDIDATES)
-        # After removing the INI (restoring defaults), reload again.
-        # _patch_ini_config already restored _AGENT_PROFILES_INI to the
-        # real (absent) path, so we just need to reset the cache.
-        relay._AGENT_PROFILES_INI_CACHE = None
-        relay._reload_agent_profiles_ini()
+        # Simulate the INI being deleted: point to a nonexistent path
+        # and reset the cache so reload picks up defaults.
+        missing = base / "does-not-exist.ini"
+        with patch.object(relay, "_AGENT_PROFILES_INI", missing):
+            relay._AGENT_PROFILES_INI_CACHE = None
+            relay._reload_agent_profiles_ini()
         self.assertNotIn("pi", relay.AGENT_PROFILE_CANDIDATES)
         for key in ("codex", "claude", "opencode"):
             self.assertIn(key, relay.AGENT_PROFILE_CANDIDATES)
