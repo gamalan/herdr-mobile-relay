@@ -16,6 +16,7 @@ async function boot(page: Page, relays: RelayFixture[] = [], path = '/') {
 
     const sockets: MockSocket[] = [];
     const commands: Record<string, unknown>[] = [];
+    const socketCommands: Record<string, unknown>[][] = [];
     let nextInteraction: Record<string, unknown> | null = null;
     let autoCommands = true;
 
@@ -29,8 +30,11 @@ async function boot(page: Page, relays: RelayFixture[] = [], path = '/') {
       onclose: (() => void) | null = null;
       onerror: (() => void) | null = null;
       onmessage: ((event: MessageEvent) => void) | null = null;
+      readonly index: number;
       constructor(readonly url: string) {
+        this.index = sockets.length;
         sockets.push(this);
+        socketCommands.push([]);
         queueMicrotask(() => {
           this.readyState = MockSocket.OPEN;
           this.onopen?.();
@@ -39,6 +43,7 @@ async function boot(page: Page, relays: RelayFixture[] = [], path = '/') {
       send(serialized: string) {
         const message = JSON.parse(serialized) as Record<string, unknown>;
         commands.push(message);
+        socketCommands[this.index].push(message);
         if (message.type === 'read_pane' || message.type === 'get_activity' || message.type === 'list_directories' || message.type === 'refresh_agents') return;
         if (!autoCommands) return;
         if (message.type === 'upload_image') {
@@ -89,6 +94,7 @@ async function boot(page: Page, relays: RelayFixture[] = [], path = '/') {
     Object.assign(window, {
       __relayCommands: commands,
       __relaySockets: sockets,
+      __relaySocketCommands(index: number) { return socketCommands[index] || []; },
       __relayServer(index: number, message: unknown) { sockets[index]?.server(message); },
       __relayClose(index: number) { sockets[index]?.serverClose(); },
       __relayNextInteraction(interaction: Record<string, unknown>) { nextInteraction = interaction; },
@@ -108,6 +114,11 @@ async function server(page: Page, index: number, message: unknown) {
 
 async function commands(page: Page) {
   return page.evaluate(() => (window as any).__relayCommands as Record<string, unknown>[]);
+}
+
+async function commandsForSocket(page: Page, index: number) {
+  return page.evaluate((socketIndex) =>
+    (window as any).__relaySocketCommands(socketIndex) as Record<string, unknown>[], index);
 }
 
 async function handshake(page: Page, index: number, overrides: Record<string, unknown> = {}) {
@@ -220,7 +231,7 @@ test('resets drafts and terminal output when moving to another agent', async ({ 
   await expect(page.getByRole('log')).not.toContainText('private output from agent A');
 });
 
-test('keeps the active terminal open while a sleeping phone reconnects', async ({ page }) => {
+test('replaces a half-open socket immediately when a sleeping phone resumes', async ({ page }) => {
   await boot(page, [fedora]);
   await expect.poll(() => socketCount(page)).toBe(1);
   await handshake(page, 0);
@@ -235,20 +246,25 @@ test('keeps the active terminal open while a sleeping phone reconnects', async (
   await page.evaluate(() => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     document.dispatchEvent(new Event('visibilitychange'));
-    (window as any).__relayClose(0);
   });
-  await expect(page.getByRole('img', { name: 'Relay reconnecting' })).toBeVisible();
   await page.waitForTimeout(5_100);
   await expect(page.getByRole('main', { name: 'Terminal for Resume app' })).toBeVisible();
   await expect(page.getByRole('main', { name: 'Agent unavailable' })).toBeHidden();
   await expect(page.getByRole('log')).toContainText('cached terminal output');
+  await expect(page.getByRole('img', { name: 'Agent working' })).toBeVisible();
 
   await page.evaluate(() => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     document.dispatchEvent(new Event('visibilitychange'));
   });
   await expect.poll(() => socketCount(page)).toBe(2);
+  await expect.poll(async () =>
+    (await commandsForSocket(page, 1)).some((command) => command.type === 'read_pane')).toBe(true);
   await handshake(page, 1);
+  await server(page, 1, {
+    type: 'pane_content', pane_id: 'w1:p1', format: 'plain', content: 'fresh output after resume',
+  });
+  await expect(page.getByRole('log')).toContainText('fresh output after resume');
   await server(page, 1, {
     type: 'agents',
     agents: [{ pane_id: 'w1:p1', status: 'working', project: 'Resume app', agent: 'codex' }],
