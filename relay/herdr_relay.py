@@ -133,6 +133,16 @@ _DEFAULT_SKILL_DIRS = {
     ],
 }
 
+# Default command format per agent profile id. ``{name}`` is replaced with
+# the skill name. Only agents with a known format get skill suggestions.
+_DEFAULT_COMMAND_FORMATS = {
+    "pi": "skill:{name}",
+}
+
+# Track which implied (default) profiles have already been warned about so
+# they only warn once per process lifetime.
+_MISSING_AGENT_WARNED = set()
+
 # INI file location — respects ``$XDG_CONFIG_HOME`` when set.
 _CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
 _AGENT_PROFILES_INI = _CONFIG_HOME / "herdr" / "agent-profiles.ini"
@@ -147,9 +157,13 @@ def _read_agent_profiles_ini():
     if not _AGENT_PROFILES_INI.is_file():
         return None
     try:
+        raw = _AGENT_PROFILES_INI.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    try:
         parser = configparser.ConfigParser(interpolation=None)
-        parser.read_string(_AGENT_PROFILES_INI.read_text())
-    except (OSError, configparser.Error):
+        parser.read_string(raw)
+    except configparser.Error:
         return None
     return parser
 
@@ -170,6 +184,8 @@ def _reload_agent_profiles_ini():
     AGENT_PROFILE_CANDIDATES = (
         _load_agent_profiles_from_config() or _DEFAULT_AGENT_PROFILE_CANDIDATES
     )
+    # Allow a fresh round of warnings after reload.
+    _MISSING_AGENT_WARNED.clear()
 
 
 def _load_agent_profiles_from_config():
@@ -1711,7 +1727,7 @@ def compact_text(value, limit=240):
 
 def slash_command_entry(name, description, argument_hint="", source="builtin"):
     entry = {
-        "command": f"/{name}",
+        "command": f"/{name.lstrip('/')}",
         "description": compact_text(description, 240),
         "source": source,
     }
@@ -1925,6 +1941,33 @@ def _agent_skill_dirs(agent_id):
     return dirs or _expand_skill_paths(default)
 
 
+def _agent_command_format(profile_id):
+    """Return the command-format template for *profile_id*, or ``None``.
+
+    When ``None`` the agent has no known command syntax and skill
+    suggestions are disabled.  The format string may contain ``{name}``
+    as the only replacement field.
+
+    The ``[commands]`` section in agent-profiles.ini can override the
+    defaults.  A key with an empty or ``"off"`` value explicitly disables
+    skill suggestions even when a default format exists.
+    """
+    parser = _AGENT_PROFILES_INI_CACHE
+    raw = ""
+    try:
+        if parser is not None and parser.has_section("commands"):
+            raw = parser.get("commands", profile_id, fallback="")
+    except configparser.Error:
+        raw = ""
+
+    explicit = raw.strip()
+    if explicit:
+        if explicit.lower() in ("", "off"):
+            return None
+        return explicit
+    return _DEFAULT_COMMAND_FORMATS.get(profile_id)
+
+
 def discover_agent_skills(agent_id):
     """Discover skills for a generic agent from its configured directories.
 
@@ -1936,17 +1979,20 @@ def discover_agent_skills(agent_id):
       Subsequent directories are ``"project"``.
     - Duplicate command names are resolved by source order: later
       directories **do not** override earlier ones.
-    - Pi skills are emitted as ``/skill:<name>``; all other agents use
-      plain ``/<name>``.
+    - The command format is determined by ``_agent_command_format()``.
+      Agents with no known format get no skill suggestions.
 
     Returns ``(commands, truncated)``.
     """
+    command_fmt = _agent_command_format(agent_id)
+    if command_fmt is None:
+        return [], False
+
     commands = []
     scanned = 0
     truncated = False
     seen = set()
     dirs = _agent_skill_dirs(agent_id)
-    is_pi = agent_id == "pi"
     for dir_index, directory in enumerate(dirs):
         source = "personal" if dir_index == 0 else "project"
         dir_path = Path(directory)
@@ -1978,7 +2024,7 @@ def discover_agent_skills(agent_id):
             if name in seen:
                 continue
             seen.add(name)
-            command_name = f"skill:{name}" if is_pi else name
+            command_name = command_fmt.format(name=name)
             description = metadata.get("description") or f"{name.capitalize()} skill"
             commands.append(slash_command_entry(
                 command_name,
@@ -1992,6 +2038,22 @@ def discover_agent_skills(agent_id):
     return commands, truncated
 
 
+def _profile_id_for_agent_name(agent_name):
+    """Map a herdr-reported agent name to a configured profile ID.
+
+    The configuration uses profile IDs (e.g. ``"pi"``) but Herdr may report
+    a different name (e.g. ``"pi-coding-agent"``).  Normalise by checking
+    for direct or substring matches against the configured candidates.
+    """
+    normalized = str(agent_name or "").casefold()
+    if normalized in AGENT_PROFILE_CANDIDATES:
+        return normalized
+    for profile_id in AGENT_PROFILE_CANDIDATES:
+        if profile_id in normalized:
+            return profile_id
+    return normalized
+
+
 def slash_command_catalog(agent):
     agent_type = str(agent.get("agent") or "").casefold()
     if "claude" in agent_type:
@@ -2001,8 +2063,9 @@ def slash_command_catalog(agent):
         builtins = CODEX_SLASH_COMMANDS
         custom, truncated, hidden = [], False, set()
     else:
+        profile_id = _profile_id_for_agent_name(agent.get("agent") or "")
         builtins = {}
-        custom, truncated = discover_agent_skills(agent_type)
+        custom, truncated = discover_agent_skills(profile_id)
         hidden = set()
 
     commands = {
@@ -2021,10 +2084,26 @@ def slash_command_catalog(agent):
 
 def load_agent_profiles():
     profiles = {}
+    parser = _AGENT_PROFILES_INI_CACHE
+    configured_ids = set()
+    try:
+        if parser is not None and parser.has_section("profiles"):
+            configured_ids = {
+                key.strip()
+                for key, value in parser.items("profiles")
+                if key.strip() and value.strip()
+            }
+    except configparser.Error:
+        pass
     for profile_id, label in AGENT_PROFILE_CANDIDATES.items():
         executable = shutil.which(profile_id)
         if not executable:
-            print(f"WARNING: configured agent profile '{profile_id}' ({label}) has no binary on PATH")
+            # Only warn for profiles explicitly added by the user
+            # (i.e. present in the INI file, not the default set).
+            is_explicit = profile_id in configured_ids
+            if is_explicit and profile_id not in _MISSING_AGENT_WARNED and profile_id not in _DEFAULT_AGENT_PROFILE_CANDIDATES:
+                _MISSING_AGENT_WARNED.add(profile_id)
+                print(f"WARNING: configured agent profile '{profile_id}' ({label}) has no binary on PATH")
             continue
         profiles[profile_id] = {
             "id": profile_id,

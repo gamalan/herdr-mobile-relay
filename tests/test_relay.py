@@ -2021,18 +2021,28 @@ Production-like verification.
     def _patch_ini_config(self, ini, base):
         """Context manager that patches the relay's INI wiring end-to-end.
 
-        Patches ``_CONFIG_HOME``, ``_AGENT_PROFILES_INI``, and the cached
-        parser so that ``_load_agent_profiles_from_config`` and
-        ``_agent_skill_dirs`` see the temp file.  All three are
-        auto-restored when the context exits — no stale parser leaks into
-        other tests.
+        Patches ``_CONFIG_HOME``, ``_AGENT_PROFILES_INI``, the cached
+        parser, **and** ``AGENT_PROFILE_CANDIDATES`` so that
+        ``_load_agent_profiles_from_config`` and ``_agent_skill_dirs``
+        see the temp file.  All state is auto-restored when the context
+        exits — no stale parser or mutated constants leak into other tests.
         """
+        saved_candidates = dict(relay.AGENT_PROFILE_CANDIDATES)
         with (
             patch.object(relay, "_CONFIG_HOME", base),
             patch.object(relay, "_AGENT_PROFILES_INI", ini),
         ):
             with patch.object(relay, "_AGENT_PROFILES_INI_CACHE", relay._read_agent_profiles_ini()):
-                yield ini, base
+                try:
+                    relay.AGENT_PROFILE_CANDIDATES = (
+                        relay._load_agent_profiles_from_config()
+                        or relay._DEFAULT_AGENT_PROFILE_CANDIDATES
+                    )
+                    relay._MISSING_AGENT_WARNED.clear()
+                    yield ini, base
+                finally:
+                    relay.AGENT_PROFILE_CANDIDATES = saved_candidates
+                    relay._MISSING_AGENT_WARNED.clear()
 
     def test_dynamic_profiles_merge_with_defaults(self):
         ini, base = self._make_test_ini("[profiles]\npi = Pi\n")
@@ -2229,10 +2239,12 @@ Production-like verification.
         self.assertIsInstance(relay.AGENT_PROFILE_CANDIDATES, dict)
         self.assertTrue(relay.AGENT_PROFILE_CANDIDATES)
         # The constant is composed of the defaults when no INI exists.
-        # (The test environment has no ~/.config/herdr/agent-profiles.ini
-        # by design, so this is the normal runtime baseline.)
-        for key in ("codex", "claude", "opencode"):
-            self.assertIn(key, relay.AGENT_PROFILE_CANDIDATES)
+        # Use a temp config to avoid depending on the real environment.
+        ini, base = self._make_test_ini("")
+        ini.unlink()
+        with self._patch_ini_config(ini, base):
+            for key in ("codex", "claude", "opencode"):
+                self.assertIn(key, relay.AGENT_PROFILE_CANDIDATES)
 
     def test_sighup_reloads_agent_profiles_from_changed_ini(self):
         ini, base = self._make_test_ini(
@@ -2240,11 +2252,11 @@ Production-like verification.
         )
         with self._patch_ini_config(ini, base):
             relay._reload_agent_profiles_ini()
-        self.assertEqual(
-            set(relay.AGENT_PROFILE_CANDIDATES),
-            {"pi"},
-            "After SIGHUP, profiles should reflect the changed INI",
-        )
+            self.assertEqual(
+                set(relay.AGENT_PROFILE_CANDIDATES),
+                {"pi"},
+                "After SIGHUP, profiles should reflect the changed INI",
+            )
 
     def test_sighup_reverts_to_defaults_when_ini_removed(self):
         ini, base = self._make_test_ini(
@@ -2253,19 +2265,19 @@ Production-like verification.
         with self._patch_ini_config(ini, base):
             relay._reload_agent_profiles_ini()
             self.assertIn("pi", relay.AGENT_PROFILE_CANDIDATES)
-        # Simulate the INI being deleted: point to a nonexistent path
-        # and reset the cache so reload picks up defaults.
-        missing = base / "does-not-exist.ini"
-        with patch.object(relay, "_AGENT_PROFILES_INI", missing):
-            relay._AGENT_PROFILES_INI_CACHE = None
-            relay._reload_agent_profiles_ini()
-        self.assertNotIn("pi", relay.AGENT_PROFILE_CANDIDATES)
-        for key in ("codex", "claude", "opencode"):
-            self.assertIn(key, relay.AGENT_PROFILE_CANDIDATES)
+            # Simulate the INI being deleted: point to a nonexistent path
+            # and reset the cache so reload picks up defaults.
+            missing = base / "does-not-exist.ini"
+            with patch.object(relay, "_AGENT_PROFILES_INI", missing):
+                relay._AGENT_PROFILES_INI_CACHE = None
+                relay._reload_agent_profiles_ini()
+            self.assertNotIn("pi", relay.AGENT_PROFILE_CANDIDATES)
+            for key in ("codex", "claude", "opencode"):
+                self.assertIn(key, relay.AGENT_PROFILE_CANDIDATES)
 
-    def test_missing_binary_warns(self):
+    def test_missing_binary_warns_only_for_user_configured_profiles(self):
         ini, base = self._make_test_ini(
-            "[profiles]\npi = Pi\nnonexistent = Ghost\n[config]\nreplace_profiles = true\n"
+            "[profiles]\nnonexistent = Ghost\n[config]\nreplace_profiles = true\n"
         )
         with self._patch_ini_config(ini, base):
             relay._reload_agent_profiles_ini()
@@ -2280,8 +2292,12 @@ Production-like verification.
             any("nonexistent" in w for w in warnings),
             "Should warn for configured profile with no binary",
         )
-        # pi may or may not be on PATH in the test runner; either way,
-        # the warning for nonexistent must appear.
+        # Default profiles (codex, claude, opencode) are never warned about
+        # even when absent.
+        self.assertFalse(
+            any("codex" in w or "claude" in w or "opencode" in w for w in warnings),
+            "Default profiles should not produce warnings",
+        )
 
     def test_workspace_selection_prefers_the_space_owned_by_the_working_directory(self):
         cwd = Path("/home/test/Development/project")
@@ -2328,6 +2344,79 @@ Production-like verification.
             ),
             "",
         )
+
+    def test_profile_id_maps_agent_name_to_configured_profile(self):
+        ini, base = self._make_test_ini(
+            "[profiles]\npi = Pi\n[config]\nreplace_profiles = true\n"
+        )
+        with self._patch_ini_config(ini, base):
+            self.assertEqual(relay._profile_id_for_agent_name("pi"), "pi")
+            self.assertEqual(relay._profile_id_for_agent_name("pi-coding-agent"), "pi")
+            self.assertEqual(relay._profile_id_for_agent_name("opencode"), "opencode")
+            # Unknown agent returns itself as fallback
+            self.assertEqual(relay._profile_id_for_agent_name("unknown-agent"), "unknown-agent")
+
+    def test_non_utf8_ini_falls_back_without_crashing(self):
+        ini, base = self._make_test_ini("")
+        # Write bytes that are not valid UTF-8
+        ini.write_bytes(b"\xff\xfe[profiles]\npi = Pi\n")
+        with self._patch_ini_config(ini, base):
+            # Should return None (fallback) instead of crashing
+            self.assertIsNone(relay._load_agent_profiles_from_config())
+
+    def test_default_profiles_never_warn_about_missing_binaries(self):
+        ini, base = self._make_test_ini("")
+        ini.unlink()
+        with self._patch_ini_config(ini, base):
+            with patch("builtins.print") as mock_print:
+                relay.load_agent_profiles()
+            warnings = [
+                args[0]
+                for args, _kwargs in mock_print.call_args_list
+                if "WARNING" in str(args[0])
+            ]
+            self.assertEqual(warnings, [], "Default profiles should never produce warnings")
+
+    def test_command_format_is_none_for_unconfigured_agents(self):
+        ini, base = self._make_test_ini(
+            "[profiles]\npi = Pi\n[config]\nreplace_profiles = true\n"
+        )
+        with self._patch_ini_config(ini, base):
+            self.assertEqual(relay._agent_command_format("pi"), "skill:{name}")
+            self.assertIsNone(relay._agent_command_format("opencode"))
+            self.assertIsNone(relay._agent_command_format("unknown-agent"))
+
+    def test_command_format_can_be_disabled_in_ini(self):
+        ini, base = self._make_test_ini(
+            "[profiles]\npi = Pi\n[config]\nreplace_profiles = true\n"
+            "[commands]\npi = off\n"
+        )
+        with self._patch_ini_config(ini, base):
+            self.assertIsNone(relay._agent_command_format("pi"))
+
+    def test_command_format_can_be_customised_in_ini(self):
+        ini, base = self._make_test_ini(
+            "[profiles]\npi = Pi\n[config]\nreplace_profiles = true\n"
+            "[commands]\npi = /custom:{name}\n"
+        )
+        with self._patch_ini_config(ini, base):
+            self.assertEqual(relay._agent_command_format("pi"), "/custom:{name}")
+
+    def test_slash_command_catalog_maps_pi_agent_name_to_profile(self):
+        """When herdr reports 'pi-coding-agent', commands still use Pi's format."""
+        with tempfile.TemporaryDirectory() as skills_dir:
+            (Path(skills_dir) / "firehose" / "SKILL.md").parent.mkdir(parents=True)
+            (Path(skills_dir) / "firehose" / "SKILL.md").write_text(
+                "---\nname: firehose\ndescription: Firehose skill\n---\n"
+            )
+            ini, base = self._make_test_ini(
+                f"[profiles]\npi = Pi\n[skills]\npi = {skills_dir}\n"
+            )
+            with self._patch_ini_config(ini, base):
+                catalog = relay.slash_command_catalog({"agent": "pi-coding-agent"})
+            self.assertTrue(any(
+                c["command"] == "/skill:firehose" for c in catalog["commands"]
+            ))
 
 
 class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTestCase):
@@ -3502,6 +3591,54 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
         self.assertTrue(ws.messages[-1]["ok"])
         self.assertEqual(ws.messages[-1]["data"]["pane_id"], "w1:p2")
         self.assertEqual(ws.messages[-1]["data"]["cwd"], cwd)
+
+    async def test_pane_placement_retries_on_pane_not_found(self):
+        """pane_not_found errors are retried; other errors return immediately."""
+        async_side_effect = [
+            (False, "", "pane_not_found"),
+            (False, "", "pane_not_found"),
+            (True, json.dumps({"ok": True}), ""),
+        ]
+        with (
+            patch.object(relay, "run_herdr_async_result", AsyncMock(side_effect=async_side_effect)) as run_command,
+            patch.object(relay.asyncio, "sleep", AsyncMock()) as sleep,
+        ):
+            ok, _data, error = await relay.place_started_agent(
+                "w9:p0", "w9", "test-agent", Path("/tmp")
+            )
+        self.assertTrue(ok)
+        self.assertEqual(error, "")
+        self.assertEqual(run_command.await_count, 3)
+        self.assertGreater(sleep.await_count, 0)
+
+    async def test_pane_placement_fails_immediately_on_other_errors(self):
+        async_side_effect = [
+            (False, "", "permission denied"),
+        ]
+        with (
+            patch.object(relay, "run_herdr_async_result", AsyncMock(side_effect=async_side_effect)) as run_command,
+            patch.object(relay.asyncio, "sleep", AsyncMock()),
+        ):
+            ok, _data, error = await relay.place_started_agent(
+                "w9:p0", "w9", "test-agent", Path("/tmp")
+            )
+        self.assertFalse(ok)
+        self.assertIn("permission denied", error)
+        self.assertEqual(run_command.await_count, 1)
+
+    async def test_pane_placement_exhausts_retries(self):
+        """After 6 attempts, even pane_not_found gives up."""
+        async_side_effect = [(False, "", "pane_not_found")] * 6
+        with (
+            patch.object(relay, "run_herdr_async_result", AsyncMock(side_effect=async_side_effect)) as run_command,
+            patch.object(relay.asyncio, "sleep", AsyncMock()),
+        ):
+            ok, _data, error = await relay.place_started_agent(
+                "w9:p0", "w9", "test-agent", Path("/tmp")
+            )
+        self.assertFalse(ok)
+        self.assertIn("pane_not_found", error)
+        self.assertEqual(run_command.await_count, 6)
 
 
 if __name__ == "__main__":
