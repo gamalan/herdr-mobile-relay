@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.parse
 import configparser
 from collections import deque
@@ -1813,7 +1814,10 @@ def prune_claude_history_files():
     slow start cannot delete files lazy restoration has not read yet."""
     if not agent_activity_initialized:
         return
-    live_files = {claude_history_file(pane_id).name for pane_id in agent_types}
+    # Snapshot agent_types: poll_loop clears and rebuilds it on the event loop
+    # while this runs in a worker thread, so iterating it live risks a
+    # "dictionary changed size during iteration" crash.
+    live_files = {claude_history_file(pane_id).name for pane_id in list(agent_types)}
     cutoff = time.time() - CLAUDE_HISTORY_MAX_AGE_DAYS * 86400
     try:
         entries = list(CLAUDE_HISTORY_DIR.iterdir())
@@ -4940,6 +4944,42 @@ class UDPPlugin(asyncio.DatagramProtocol):
             pass
 
 
+async def supervise(factory, name, *, min_backoff=1.0, max_backoff=30.0):
+    """Keep a long-lived background loop alive across unhandled exceptions.
+
+    A bare ``create_task(loop())`` dies silently the first time its body
+    raises — asyncio only surfaces the exception when the task is garbage
+    collected — which leaves the relay connected but frozen: the WebSocket
+    still looks healthy while poll_loop has stopped refreshing agents. This
+    wrapper turns any such crash into a logged traceback and a restart, with
+    exponential backoff so a coroutine that raises immediately can't spin the
+    CPU. The backoff resets after a stable run so one isolated crash doesn't
+    inflate the delay for the next, unrelated one.
+    """
+    backoff = min_backoff
+    while True:
+        started = time.monotonic()
+        try:
+            await factory()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            ran = time.monotonic() - started
+            # A crash after a long healthy run is a fresh incident, not part of
+            # a crash storm, so give it the short backoff.
+            if ran >= 60:
+                backoff = min_backoff
+            print(f"Background loop {name!r} crashed after {ran:.1f}s; restarting in {backoff:.0f}s")
+            traceback.print_exc()
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, max_backoff)
+        else:
+            # A well-behaved loop runs forever; a clean return means its work
+            # is genuinely done, so stop supervising rather than busy-restart.
+            print(f"Background loop {name!r} exited; not restarting")
+            return
+
+
 async def main():
     if not AUTH_TOKEN and not is_loopback_host(WS_HOST):
         raise SystemExit("Refusing to bind a tokenless relay outside loopback. Set HERDR_RELAY_TOKEN or HERDR_RELAY_HOST=127.0.0.1.")
@@ -4951,12 +4991,12 @@ async def main():
         await loop.create_datagram_endpoint(UDPPlugin, local_addr=("127.0.0.1", PLUGIN_PORT))
     except OSError:
         print(f"UDP {PLUGIN_PORT} in use, plugin push disabled")
-    asyncio.create_task(poll_loop())
-    asyncio.create_task(event_push())
-    asyncio.create_task(prune_uploads_loop())
-    asyncio.create_task(update_check_loop())
-    asyncio.create_task(update_state_watch_loop())
-    asyncio.create_task(app_deploy_state_watch_loop())
+    asyncio.create_task(supervise(poll_loop, "poll_loop"))
+    asyncio.create_task(supervise(event_push, "event_push"))
+    asyncio.create_task(supervise(prune_uploads_loop, "prune_uploads_loop"))
+    asyncio.create_task(supervise(update_check_loop, "update_check_loop"))
+    asyncio.create_task(supervise(update_state_watch_loop, "update_state_watch_loop"))
+    asyncio.create_task(supervise(app_deploy_state_watch_loop, "app_deploy_state_watch_loop"))
     server = await serve(handle_client, WS_HOST, WS_PORT, process_request=process_request, max_size=WS_MAX_SIZE)
     print(f"Herdr Mobile Relay {RELAY_VERSION} on {WS_HOST}:{WS_PORT} (WebSocket + phone app)")
     print(f"  polling: {LOCAL_HOST}")

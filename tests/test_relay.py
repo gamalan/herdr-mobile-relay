@@ -4603,5 +4603,62 @@ class RelayCommandsTest(ClaudeHistoryIsolationMixin, unittest.IsolatedAsyncioTes
         self.assertEqual(run_command.await_count, 6)
 
 
+class SuperviseTest(unittest.IsolatedAsyncioTestCase):
+    async def test_restarts_loop_after_an_unhandled_exception(self):
+        calls = []
+
+        async def flaky():
+            calls.append(len(calls))
+            if len(calls) < 3:
+                raise RuntimeError("boom")
+            raise asyncio.CancelledError()
+
+        with patch.object(relay.asyncio, "sleep", AsyncMock()):
+            with self.assertRaises(asyncio.CancelledError):
+                await relay.supervise(flaky, "flaky")
+
+        # Two crashes, then the third run — the loop was restarted each time
+        # rather than dying on the first exception.
+        self.assertEqual(len(calls), 3)
+
+    async def test_backoff_grows_then_resets_after_a_stable_run(self):
+        delays = []
+
+        async def crasher():
+            raise RuntimeError("boom")
+
+        monotonic_values = iter([
+            0.0, 0.0,      # run 1: start, crash
+            0.0, 0.0,      # run 2: start, crash
+            0.0, 120.0,    # run 3: start, crash after 120s (stable)
+        ])
+
+        async def fake_sleep(seconds):
+            delays.append(seconds)
+            if len(delays) >= 3:
+                raise asyncio.CancelledError()
+
+        with (
+            patch.object(relay.time, "monotonic", side_effect=lambda: next(monotonic_values)),
+            patch.object(relay.asyncio, "sleep", side_effect=fake_sleep),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await relay.supervise(crasher, "crasher", min_backoff=1.0, max_backoff=30.0)
+
+        # 1s, then doubled to 2s, then reset to 1s because run 3 lasted >= 60s.
+        self.assertEqual(delays, [1.0, 2.0, 1.0])
+
+    async def test_stops_supervising_when_the_loop_returns_cleanly(self):
+        calls = []
+
+        async def finite():
+            calls.append(1)
+
+        with patch.object(relay.asyncio, "sleep", AsyncMock()):
+            await relay.supervise(finite, "finite")
+
+        self.assertEqual(len(calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
