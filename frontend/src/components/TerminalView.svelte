@@ -49,6 +49,14 @@
   let activeSlashIndex = $state(0);
   let dismissedSlashQuery = $state<string | null>(null);
 
+  // Recording state
+  let recording = $state(false);
+  let recordingPending = $state(false);
+  let mediaRecorder = $state<MediaRecorder | null>(null);
+  let audioChunks = $state<Blob[]>([]);
+  let recordingStream = $state<MediaStream | null>(null);
+
+
   const blocked = $derived(agentStatusGroup(agent) === 'blocked');
   const interaction = $derived(questionInteraction(agent));
   const questionMode = $derived(Boolean(blocked && interaction));
@@ -186,6 +194,64 @@
       relayStore.showToast((error as Error).message, true);
     }
     setTimeout(() => relayStore.readPane(agent), 500);
+  }
+
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingStream = stream;
+      audioChunks = [];
+      const recorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm' });
+      mediaRecorder = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) audioChunks = [...audioChunks, event.data];
+      };
+      recorder.onstop = () => {
+        recordingStream?.getTracks().forEach((track) => track.stop());
+        recordingStream = null;
+      };
+      recorder.start();
+      recording = true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Microphone access denied';
+      relayStore.showToast(`Recording failed: ${message}`, true);
+    }
+  }
+
+  async function stopRecording(submit: boolean) {
+    if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+    recording = false;
+    if (submit) {
+      recordingPending = true;
+    }
+    mediaRecorder.stop();
+    mediaRecorder = null;
+    if (!submit) return;
+    // Wait briefly for ondataavailable to fire
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (audioChunks.length === 0) {
+      recordingPending = false;
+      relayStore.showToast('No audio recorded.', true);
+      return;
+    }
+    const blob = new Blob(audioChunks, { type: 'audio/webm' });
+    const reader = new FileReader();
+    reader.readAsDataURL(blob);
+    await new Promise((resolve) => { reader.onloadend = resolve; });
+    const dataUrl = reader.result as string;
+    const base64 = dataUrl.split(',')[1];
+    try {
+      const text = await relayStore.transcribeAudio(agent.relay_id, base64);
+      if (text) {
+        composer = composer ? `${composer}
+${text}` : text;
+        relayStore.showToast('Voice transcribed.');
+      }
+    } catch (error) {
+      relayStore.showToast(`Transcription failed: ${(error as Error).message}`, true);
+    } finally {
+      recordingPending = false;
+    }
   }
 
   function composerInput() {
@@ -382,6 +448,7 @@
       </section>
     {/if}
     <div class="term-input">
+      {#if !recording}
       <Button variant="ghost" size="icon" disabled={blocked} aria-label="Attach image" onclick={() => fileInput.click()}>
         <svg class="button-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
           <rect x="3" y="4" width="18" height="16" rx="2"></rect>
@@ -389,6 +456,17 @@
           <path d="m4 17 4.5-4.5 3.5 3.5 2.5-2.5L20 19"></path>
         </svg>
       </Button>
+      <Button variant="ghost" size="icon" disabled={blocked || recording} aria-label="Voice input" onclick={startRecording}>
+        <svg class="button-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+          <line x1="12" y1="19" x2="12" y2="22"></line>
+        </svg>
+      </Button>
+      {/if}
+      {#if recording}
+        <div class="recording-indicator"><span class="recording-dot"></span> Recording…</div>
+      {:else}
       <div class:awaiting-approval={blocked && !composerFocused} class:has-text={Boolean(composer)} class="composer-field">
         <textarea
           bind:this={composerElement}
@@ -414,7 +492,13 @@
         ></textarea>
         {#if composer}<button class="input-clear" aria-label="Clear prompt text" onclick={() => { composer = ''; dismissedSlashQuery = null; activeSlashIndex = 0; }}>×</button>{/if}
       </div>
+      {/if}
+      {#if recording}
+        <Button size="icon" disabled={recordingPending} aria-label="Submit recording" onclick={() => stopRecording(true)}>✓</Button>
+        <Button size="icon" variant="ghost" disabled={recordingPending} aria-label="Cancel recording" onclick={() => stopRecording(false)}>✕</Button>
+      {:else}
       <Button size="icon" disabled={!composer.replace(/[\r\n]+$/g, '') || blocked} aria-label="Send prompt" onclick={sendPrompt}>➤</Button>
+      {/if}
       <input bind:this={fileInput} type="file" accept="image/*" multiple hidden onchange={(event) => { void filesSelected(event.currentTarget.files || []); event.currentTarget.value = ''; }} />
     </div>
     {#if uploadStatus}<p class:error={uploadError} class="upload-status" role="status">{uploadStatus}</p>{/if}

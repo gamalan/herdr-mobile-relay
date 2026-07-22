@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["websockets>=14.0", "pywebpush>=2.0.0", "py-vapid>=1.9.2", "cryptography>=42.0.0"]
+# dependencies = ["websockets>=14.0", "pywebpush>=2.0.0", "py-vapid>=1.9.2", "cryptography>=42.0.0", "httpx>=0.27.0"]
 # ///
 """Herdr Mobile Relay server — polls local herdr and broadcasts to clients."""
 import asyncio
@@ -19,6 +19,7 @@ import socket
 import string
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -64,6 +65,7 @@ from websockets.exceptions import ConnectionClosed
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from py_vapid import Vapid
 from pywebpush import WebPushException, webpush
+import httpx
 
 
 def default_runtime_dir():
@@ -99,6 +101,7 @@ IDLE_POLL_INTERVAL = max(POLL_INTERVAL, 15.0)
 QUESTION_KEY_DELAY = 0.15
 PLUGIN_PORT = int(os.environ.get("HERDR_RELAY_PLUGIN_PORT", "8376"))
 AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Shared secret for public/browser relay auth
+
 RELAY_INSTANCE_ID = os.environ.get("HERDR_RELAY_INSTANCE_ID", "")
 ALLOWED_ORIGINS = {
     origin.strip().rstrip("/")
@@ -298,6 +301,7 @@ RELAY_CAPABILITIES = [
     "self_update",
     "structured_questions",
     "slash_commands",
+    "transcribe_audio",
 ]
 # Version 2 adds staged Claude Code question answers. Bump together with
 # APP_PROTOCOL_VERSION in frontend/src/lib/protocol.ts whenever mutations change incompatibly.
@@ -321,6 +325,7 @@ MUTATING_MESSAGE_TYPES = frozenset({
     "deploy_app_update",
     "install_update",
     "upload_image",
+    "transcribe_audio",
 })
 POLL_WAKE_ACTIONS = frozenset({
     "acknowledge_pane",
@@ -4990,6 +4995,147 @@ async def reject_incompatible_client_protocol(ws, msg):
     await safe_send_json(ws, response)
 
 
+TRANSCRIBE_TEMP_DIR = Path(tempfile.gettempdir()) / "herdr-transcribe"
+
+
+def _read_transcribe_config() -> dict:
+    """Read transcribe settings from agent-profiles.ini [transcribe] section.
+
+    Returns a dict with keys:
+        url (str): STT endpoint URL (router or direct provider).
+        api_key (str): Optional Authorization bearer token.
+        model (str): Optional model name sent as form field.
+        max_size (int): Max audio size in bytes.
+        timeout (float): HTTP request timeout in seconds.
+    """
+    defaults = {
+        "max_size": 25 * 1024 * 1024,
+        "timeout": 30.0,
+    }
+    parser = _read_agent_profiles_ini()
+    if parser is None or not parser.has_section("transcribe"):
+        return defaults
+
+    config = dict(defaults)
+    raw = dict(parser["transcribe"])
+
+    if "url" in raw:
+        config["url"] = raw["url"].strip()
+    if "api_key" in raw:
+        key = raw["api_key"].strip()
+        if key and not key.startswith("#"):
+            config["api_key"] = key
+    if "model" in raw:
+        m = raw["model"].strip()
+        if m:
+            config["model"] = m
+    if "max_size_mb" in raw:
+        try:
+            config["max_size"] = int(raw["max_size_mb"]) * 1024 * 1024
+        except (ValueError, TypeError):
+            pass
+    if "timeout_s" in raw:
+        try:
+            config["timeout"] = float(raw["timeout_s"])
+        except (ValueError, TypeError):
+            pass
+
+    return config
+
+
+async def transcribe_audio(data_b64: str, mime: str) -> tuple[bool, str, str]:
+    """Transcribe audio via configured STT endpoint.
+
+    Reads settings from agent-profiles.ini [transcribe] section.
+    Supports router URLs (OpenAI-compatible) and direct providers.
+    Returns (ok, error_or_text, warning).
+    """
+    cfg = _read_transcribe_config()
+    endpoint = cfg.get("url", "")
+    if not endpoint:
+        return False, "Transcribe URL not configured", ""
+
+    if not data_b64:
+        return False, "Missing audio data", ""
+    try:
+        audio_data = base64.b64decode(data_b64, validate=True)
+    except Exception:
+        return False, "Invalid audio encoding", ""
+
+    if len(audio_data) > cfg["max_size"]:
+        mb = cfg["max_size"] // (1024 * 1024)
+        return False, f"Audio is larger than {mb} MB", ""
+
+    TRANSCRIBE_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    stem = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"
+    input_path = TRANSCRIBE_TEMP_DIR / f"{stem}.webm"
+    wav_path = TRANSCRIBE_TEMP_DIR / f"{stem}.wav"
+
+    try:
+        input_path.write_bytes(audio_data)
+
+        # Transcode WebM/Opus -> WAV 16kHz 16-bit mono
+        ffmpeg_result = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(input_path),
+             "-ar", "16000", "-ac", "1", "-sample_fmt", "s16",
+             str(wav_path)],
+            capture_output=True, text=True, timeout=60)
+        if ffmpeg_result.returncode != 0:
+            return False, "Transcription failed", ""
+
+        if not wav_path.exists() or wav_path.stat().st_size == 0:
+            return False, "Transcription failed", ""
+
+        # Build request to the configured STT endpoint
+        url = endpoint.rstrip("/")
+        if "/audio/transcriptions" not in url and "/v1/listen" not in url:
+            url = f"{url}/audio/transcriptions"
+
+        headers = {}
+        if "api_key" in cfg:
+            headers["Authorization"] = f"Bearer {cfg['api_key']}"
+
+        data = {}
+        if "model" in cfg:
+            data["model"] = cfg["model"]
+
+        async with httpx.AsyncClient(timeout=cfg["timeout"]) as client:
+            with open(wav_path, "rb") as f:
+                files = {"file": ("audio.wav", f, "audio/wav")}
+                resp = await client.post(url, files=files, data=data or None, headers=headers)
+
+        if resp.status_code != 200:
+            try:
+                detail = resp.json().get("error", {}).get("message", "")
+            except Exception:
+                detail = resp.text[:100] if resp.text else ""
+            message = f"Transcription unavailable (HTTP {resp.status_code})"
+            if detail and len(detail) < 80:
+                message += f": {detail}"
+            return False, message, ""
+
+        result = resp.json()
+        text = (result.get("text") or "").strip()
+        if not text:
+            return False, "Transcription failed", ""
+
+        return True, text, ""
+
+    except subprocess.TimeoutExpired:
+        return False, "Transcription failed", ""
+    except httpx.TimeoutException:
+        return False, "Transcription unavailable (timeout)", ""
+    except Exception as exc:
+        return False, "Transcription failed", ""
+    finally:
+        # Clean up temp files
+        for p in (input_path, wav_path):
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 async def handle_client(ws):
     try:
         profiles = load_agent_profiles()
@@ -5193,6 +5339,27 @@ async def handle_client(ws):
                     pane_id=pane_id,
                     request_id=request_id,
                     details=command_details(msg, {"path": path or ""}),
+                )
+            elif msg_type == "transcribe_audio":
+                request_id = request_id_for(msg)
+                ok, result, warning = await transcribe_audio(
+                    msg.get("data", ""),
+                    msg.get("mime", ""),
+                )
+                await safe_send_json(ws, {
+                    "type": "transcribe_result",
+                    "ok": ok,
+                    "text": result if ok else "",
+                    "error": "" if ok else result,
+                    "warning": warning,
+                    "request_id": request_id,
+                })
+                await publish_activity(
+                    "transcribe",
+                    "completed" if ok else "failed",
+                    f"Voice transcribed ({len(result)} chars)" if ok else f"Transcription failed: {result}",
+                    request_id=request_id,
+                    details=command_details(msg, {}),
                 )
     except ConnectionClosed:
         pass
