@@ -17,6 +17,7 @@
     "size": "node scripts/check-size.mjs dist"
   },
   "dependencies": {
+    "@moonshine-ai/moonshine-js": "^0.1.28",
     "svelte": "5.56.4"
   },
   "devDependencies": {

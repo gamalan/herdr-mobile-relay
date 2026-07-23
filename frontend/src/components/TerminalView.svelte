@@ -10,8 +10,10 @@
     sortedAgents,
   } from '$lib/agents';
   import { showAgentStatusLine } from '$lib/preferences';
+  import { getRelayVoiceMode, getRelaySendMode } from '$lib/config';
   import { replaceView } from '$lib/router';
   import { relayStore } from '$lib/store';
+  import { startLocalTranscription } from '$lib/stt';
   import { claudeMobileTerminalContent, lastCompletedResponse, renderTerminalContent } from '$lib/terminal';
   import type { Agent, SlashCommand, SlashCommandCatalog, TerminalFrame } from '$lib/types';
 
@@ -55,6 +57,7 @@
   let mediaRecorder = $state<MediaRecorder | null>(null);
   let audioChunks = $state<Blob[]>([]);
   let recordingStream = $state<MediaStream | null>(null);
+  let stopLocalTranscriptionFn = $state<(() => string) | null>(null);
 
 
   const blocked = $derived(agentStatusGroup(agent) === 'blocked');
@@ -197,60 +200,114 @@
   }
 
   async function startRecording() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      recordingStream = stream;
-      audioChunks = [];
-      const recorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm' });
-      mediaRecorder = recorder;
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) audioChunks = [...audioChunks, event.data];
-      };
-      recorder.onstop = () => {
-        recordingStream?.getTracks().forEach((track) => track.stop());
-        recordingStream = null;
-      };
-      recorder.start();
+    const relayId = agent.relay_id;
+    const voiceMode = getRelayVoiceMode(relayId);
+
+    if (voiceMode === 'remote') {
+      // Remote mode: use existing MediaRecorder flow
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        recordingStream = stream;
+        audioChunks = [];
+        const recorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm' });
+        mediaRecorder = recorder;
+        recorder.ondataavailable = (event) => {
+          if (event.data.size > 0) audioChunks = [...audioChunks, event.data];
+        };
+        recorder.onstop = () => {
+          recordingStream?.getTracks().forEach((track) => track.stop());
+          recordingStream = null;
+        };
+        recorder.start();
+        recording = true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Microphone access denied';
+        relayStore.showToast(`Recording failed: ${message}`, true);
+      }
+    } else {
+      // Local mode: use Moonshine on-device transcription
+      stopLocalTranscriptionFn = await startLocalTranscription({
+        onLoading() {
+          relayStore.showToast('Loading speech model…');
+        },
+        onReady() {
+          relayStore.showToast('Speech model loaded. Recording…');
+        },
+        onChunk(text: string) {
+          // Incremental transcription: update composer with accumulated text
+          composer = text;
+        },
+        onError(message: string) {
+          relayStore.showToast(message, true);
+          recording = false;
+        },
+      });
       recording = true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Microphone access denied';
-      relayStore.showToast(`Recording failed: ${message}`, true);
     }
   }
 
   async function stopRecording(submit: boolean) {
-    if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
-    recording = false;
-    if (submit) {
-      recordingPending = true;
-    }
-    mediaRecorder.stop();
-    mediaRecorder = null;
-    if (!submit) return;
-    // Wait briefly for ondataavailable to fire
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    if (audioChunks.length === 0) {
-      recordingPending = false;
-      relayStore.showToast('No audio recorded.', true);
-      return;
-    }
-    const blob = new Blob(audioChunks, { type: 'audio/webm' });
-    const reader = new FileReader();
-    reader.readAsDataURL(blob);
-    await new Promise((resolve) => { reader.onloadend = resolve; });
-    const dataUrl = reader.result as string;
-    const base64 = dataUrl.split(',')[1];
-    try {
-      const text = await relayStore.transcribeAudio(agent.relay_id, base64);
-      if (text) {
-        composer = composer ? `${composer}
-${text}` : text;
-        relayStore.showToast('Voice transcribed.');
+    const relayId = agent.relay_id;
+    const voiceMode = getRelayVoiceMode(relayId);
+    const sendMode = getRelaySendMode(relayId);
+
+    if (voiceMode === 'remote') {
+      if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+      recording = false;
+      if (submit) {
+        recordingPending = true;
       }
-    } catch (error) {
-      relayStore.showToast(`Transcription failed: ${(error as Error).message}`, true);
-    } finally {
+      mediaRecorder.stop();
+      mediaRecorder = null;
+      if (!submit) return;
+      // Wait briefly for ondataavailable to fire
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (audioChunks.length === 0) {
+        recordingPending = false;
+        relayStore.showToast('No audio recorded.', true);
+        return;
+      }
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
+      const reader = new FileReader();
+      reader.readAsDataURL(blob);
+      await new Promise((resolve) => { reader.onloadend = resolve; });
+      const dataUrl = reader.result as string;
+      const base64 = dataUrl.split(',')[1];
+      try {
+        const text = await relayStore.transcribeAudio(relayId, base64);
+        if (text) {
+          composer = composer ? `${composer}
+${text}` : text;
+          if (sendMode === 'direct-send') {
+            await sendPrompt();
+          } else {
+            relayStore.showToast('Voice transcribed.');
+          }
+        }
+      } catch (error) {
+        relayStore.showToast(`Transcription failed: ${(error as Error).message}`, true);
+      } finally {
+        recordingPending = false;
+      }
+    } else {
+      // Local mode: stop Moonshine transcription
+      recording = false;
+      if (!stopLocalTranscriptionFn) {
+        recordingPending = false;
+        return;
+      }
+      const text = stopLocalTranscriptionFn();
+      stopLocalTranscriptionFn = null;
       recordingPending = false;
+
+      if (submit && text) {
+        composer = text;
+        if (sendMode === 'direct-send') {
+          await sendPrompt();
+        } else {
+          relayStore.showToast('Voice transcribed.');
+        }
+      }
     }
   }
 

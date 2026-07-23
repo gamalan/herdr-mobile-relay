@@ -1,10 +1,15 @@
 export type RelayStatus = 'connecting' | 'connected' | 'disconnected';
 
+export type VoiceMode = 'local' | 'remote';
+export type SendMode = 'edit-then-send' | 'direct-send';
+
 export interface RelayConfig {
   id: string;
   label: string;
   url: string;
   token: string;
+  voice_mode?: VoiceMode;
+  send_mode?: SendMode;
 }
 
 export interface AgentProfile {

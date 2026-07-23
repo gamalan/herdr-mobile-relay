@@ -100,7 +100,7 @@ Teardown is explicit and confirmed. It removes only resources recorded as owned 
 - View terminal output and send prompts, slash commands with suggestions, terminal keys, screenshots, or photos.
 - Start, rename, clear, and stop detected Codex, Claude Code, and OpenCode agents.
 - Search relay activity and receive blocked-agent or optional completion notifications.
-- Dictate agent prompts via push-to-talk voice input with automatic speech-to-text transcription.
+- Dictate agent prompts via push-to-talk voice input with on-device or relay-based speech-to-text transcription.
 - Require device verification before reconnecting relays.
 - Install the app as a PWA on Android or iOS.
 
@@ -211,9 +211,21 @@ Pi's alias above is built in. Configured aliases can extend or override built-in
 
 ### Voice Input
 
-The relay supports push-to-talk voice input. When you tap the microphone button in the terminal composer, the phone records audio (WebM/Opus) and sends it to the relay, which converts it to WAV and submits it to a configured speech-to-text endpoint. The transcribed text is inserted into your prompt composer.
+The phone app supports push-to-talk voice input with two transcription modes, configured per relay in **Settings → Voice Input**:
 
-Voice transcription requires an STT endpoint URL in `~/.config/herdr/agent-profiles.ini`:
+#### Local Mode (default)
+
+Uses [MoonshineJS](https://dev.moonshine.ai) for on-device speech-to-text directly in the browser. Audio is transcribed locally using a tiny Moonshine model loaded from HuggingFace on first use (~200 MB, cached by Transformers.js).
+
+- Voice Activity Detection (VAD) splits speech into natural segments with a soft 10-second cap.
+- During recording, text appears incrementally in the composer.
+- After recording stops, you can review and edit before sending (default), or set the relay to send immediately.
+- No data leaves your phone. Works offline once the model is cached.
+- The model loads on the first microphone tap; subsequent taps are instant.
+
+#### Remote Mode
+
+Audio is sent to the relay, which forwards it to a configured STT endpoint. Requires a `[transcribe]` section in `~/.config/herdr/agent-profiles.ini`:
 
 ```ini
 [transcribe]
@@ -230,7 +242,13 @@ model = whisper-1
 | `max_size_mb` | `25` | Maximum upload size in megabytes |
 | `timeout_s` | `30` | HTTP request timeout in seconds |
 
-When the STT endpoint returns transcribed text, it is appended to the current composer content. Transcription failures show a toast notification on the phone.
+#### Send Behaviour
+
+Each relay can be configured to **edit before sending** (default) — transcribed text appears in the composer for review — or **send immediately**, which submits the text as a prompt as soon as transcription finishes.
+
+#### 10-Second Chunking
+
+In local mode, speech is transcribed in soft 10-second chunks guided by Voice Activity Detection. Each chunk is committed incrementally so you see results building up while you speak. The chunk boundary falls at a natural pause when possible, or at the 10-second hard cap during continuous speech.
 
 ### Hot Reload
 

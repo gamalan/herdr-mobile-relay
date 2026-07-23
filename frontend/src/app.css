@@ -597,6 +597,39 @@ textarea {
 .history-grid {
 	grid-template-columns: repeat(4, 1fr);
 }
+.voice-relay-row {
+	border: 1px solid var(--border);
+	border-radius: 0.5rem;
+	margin-bottom: 0.6rem;
+	padding: 0.6rem 0.8rem;
+}
+.voice-relay-row legend {
+	font-size: 0.82rem;
+	font-weight: 600;
+	padding: 0 0.25rem;
+}
+.choice-row {
+	align-items: center;
+	display: flex;
+	gap: 0.5rem;
+	margin-top: 0.4rem;
+}
+.choice-label {
+	flex-shrink: 0;
+	font-size: 0.78rem;
+	min-width: 7rem;
+}
+.voice-select {
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 0.35rem;
+	color: var(--text);
+	font-size: 0.82rem;
+	padding: 0.3rem 0.5rem;
+}
+.voice-select:hover {
+	border-color: var(--primary);
+}
 .switch-row {
 	align-items: center;
 	display: flex;

@@ -12,6 +12,10 @@
     type InterfaceSize,
     type TerminalHistoryLines,
     type Theme,
+    getRelayVoiceMode,
+    setRelayVoiceMode,
+    getRelaySendMode,
+    setRelaySendMode,
   } from '$lib/config';
   import {
     interfaceSize,
@@ -437,6 +441,38 @@
     />
     <p class="hint" id="finished-notification-hint">Optional. Blocked-agent notifications remain enabled whenever push is active.</p>
     <p class="hint" role="status">{notification.hint}</p>
+  </Card>
+
+  <Card>
+    <h3>Voice Input</h3>
+    <p class="hint">Per-relay speech-to-text and send mode settings.</p>
+    {#each relayRows as { relay } (relay.id)}
+      <fieldset class="voice-relay-row">
+        <legend>{relay.label}</legend>
+        <div class="choice-row">
+          <label class="choice-label" for="voice-mode-{relay.id}">Transcription:</label>
+          <select
+            id="voice-mode-{relay.id}"
+            class="voice-select"
+            onchange={(e) => setRelayVoiceMode(relay.id, (e.target as HTMLSelectElement).value as 'local' | 'remote')}
+          >
+            <option value="local" selected={getRelayVoiceMode(relay.id) === 'local'}>Local (on-device)</option>
+            <option value="remote" selected={getRelayVoiceMode(relay.id) === 'remote'}>Remote (relay STT)</option>
+          </select>
+        </div>
+        <div class="choice-row">
+          <label class="choice-label" for="send-mode-{relay.id}">After transcription:</label>
+          <select
+            id="send-mode-{relay.id}"
+            class="voice-select"
+            onchange={(e) => setRelaySendMode(relay.id, (e.target as HTMLSelectElement).value as 'edit-then-send' | 'direct-send')}
+          >
+            <option value="edit-then-send" selected={getRelaySendMode(relay.id) === 'edit-then-send'}>Edit before sending</option>
+            <option value="direct-send" selected={getRelaySendMode(relay.id) === 'direct-send'}>Send immediately</option>
+          </select>
+        </div>
+      </fieldset>
+    {/each}
   </Card>
 
   <Card>

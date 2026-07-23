@@ -1,4 +1,4 @@
-import type { RelayConfig } from './types';
+import type { RelayConfig, VoiceMode, SendMode } from './types';
 
 export const RELAYS_KEY = 'herdr_relays';
 export const THEME_KEY = 'herdr_theme';
@@ -15,6 +15,8 @@ export const PUSH_FINISHED_KEY = 'herdr_push_finished';
 export const PUSH_CLIENT_KEY = 'herdr_push_client_id';
 export const PUSH_VAPID_KEY_PREFIX = 'herdr_push_vapid_key_';
 export const HANDLED_NOTIFICATION_ACTIONS_KEY = 'herdr_handled_notification_actions';
+export const VOICE_MODE_KEY_PREFIX = 'herdr_voice_mode_';
+export const SEND_MODE_KEY_PREFIX = 'herdr_send_mode_';
 
 export const APP_PROTOCOL_VERSION = __APP_PROTOCOL_VERSION__;
 export const APP_VERSION = __APP_VERSION__;
@@ -34,6 +36,26 @@ export const THEME_COLORS: Record<Theme, string> = {
   solarized: '#002b36',
   rose: '#191724',
 };
+
+export function getRelayVoiceMode(relayId: string, storage: Storage = localStorage): VoiceMode {
+  const stored = storage.getItem(`${VOICE_MODE_KEY_PREFIX}${relayId}`);
+  if (stored === 'local' || stored === 'remote') return stored;
+  return 'local';
+}
+
+export function setRelayVoiceMode(relayId: string, mode: VoiceMode, storage: Storage = localStorage): void {
+  storage.setItem(`${VOICE_MODE_KEY_PREFIX}${relayId}`, mode);
+}
+
+export function getRelaySendMode(relayId: string, storage: Storage = localStorage): SendMode {
+  const stored = storage.getItem(`${SEND_MODE_KEY_PREFIX}${relayId}`);
+  if (stored === 'direct-send' || stored === 'edit-then-send') return stored;
+  return 'edit-then-send';
+}
+
+export function setRelaySendMode(relayId: string, mode: SendMode, storage: Storage = localStorage): void {
+  storage.setItem(`${SEND_MODE_KEY_PREFIX}${relayId}`, mode);
+}
 
 export function relayLabelFromUrl(url: string): string {
   try {
@@ -60,6 +82,8 @@ export function normalizeRelayConfig(relay: Partial<RelayConfig>): RelayConfig {
     label,
     url,
     token: relay.token || '',
+    voice_mode: relay.voice_mode,
+    send_mode: relay.send_mode,
   };
 }
 

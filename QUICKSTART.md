@@ -33,7 +33,7 @@ Keep the Quick Start pane open while testing. Ctrl-C stops the relay and tunnel.
 
 Run an agent in Herdr, or tap **＋** in the phone app to start a detected Codex, Claude Code, OpenCode, or any agent you have configured (see [Agent Profiles Configuration](README.md#agent-profiles-configuration)). You can inspect output, send prompts, answer approvals and structured questions, upload an image, dictate prompts by voice, and manage the agent lifecycle.
 
-Voice transcription requires configuring a speech-to-text endpoint (see [Voice Input](README.md#voice-input)).
+Voice transcription uses local on-device speech-to-text by default (MoonshineJS). You can switch to a remote endpoint or change send behaviour per relay in **Settings → Voice Input** (see [Voice Input](README.md#voice-input)).
 
 ## Make It Permanent
 
