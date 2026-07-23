@@ -100,6 +100,7 @@ Teardown is explicit and confirmed. It removes only resources recorded as owned 
 - View terminal output and send prompts, slash commands with suggestions, terminal keys, screenshots, or photos.
 - Start, rename, clear, and stop detected Codex, Claude Code, and OpenCode agents.
 - Search relay activity and receive blocked-agent or optional completion notifications.
+- Dictate agent prompts via push-to-talk voice input with automatic speech-to-text transcription.
 - Require device verification before reconnecting relays.
 - Install the app as a PWA on Android or iOS.
 
@@ -207,6 +208,29 @@ pi-coding-agent = pi
 ```
 
 Pi's alias above is built in. Configured aliases can extend or override built-in aliases. Alias values must name a configured profile; unmatched agent names are not guessed by substring.
+
+### Voice Input
+
+The relay supports push-to-talk voice input. When you tap the microphone button in the terminal composer, the phone records audio (WebM/Opus) and sends it to the relay, which converts it to WAV and submits it to a configured speech-to-text endpoint. The transcribed text is inserted into your prompt composer.
+
+Voice transcription requires an STT endpoint URL in `~/.config/herdr/agent-profiles.ini`:
+
+```ini
+[transcribe]
+url = https://api.openai.com/v1/audio/transcriptions
+api_key = sk-...
+model = whisper-1
+```
+
+| Setting | Default | Description |
+| --------- | --------- | ------------- |
+| `url` | *(required)* | OpenAI-compatible STT endpoint URL |
+| `api_key` | — | Bearer token sent as `Authorization` header |
+| `model` | — | Model name sent as form field (e.g. `whisper-1`) |
+| `max_size_mb` | `25` | Maximum upload size in megabytes |
+| `timeout_s` | `30` | HTTP request timeout in seconds |
+
+When the STT endpoint returns transcribed text, it is appended to the current composer content. Transcription failures show a toast notification on the phone.
 
 ### Hot Reload
 
