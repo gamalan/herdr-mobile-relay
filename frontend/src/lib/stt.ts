@@ -36,7 +36,7 @@ export async function loadLocalModel(): Promise<void> {
 		// Point to the English Base model on HuggingFace.
 		// Files: onnx/merged/base/quantized/encoder_model.onnx + decoder_model_merged.onnx
 		Settings.BASE_ASSET_PATH.MOONSHINE =
-			"https://huggingface.co/UsefulSensors/moonshine/resolve/main/onnx/merged/base/";
+			"https://huggingface.co/UsefulSensors/moonshine/resolve/main/onnx/merged/base";
 		const instance = new MicrophoneTranscriber(
 			"",
 			{},
