@@ -56,20 +56,24 @@ function stableReleaseAssets(): Plugin {
 			const stylesheets = Object.values(bundle).filter(
 				(item) => item.type === "asset" && item.fileName.endsWith(".css"),
 			);
+			// app.js is the initial entry. Code-split chunks (moonshine, transformers, etc.)
+			// are loaded lazily and not part of the initial payload check.
 			if (
-				javascript.length !== 1 ||
-				javascript[0]?.fileName !== "assets/app.js"
+				!javascript.some(
+					(chunk) => chunk.fileName === "assets/app.js",
+				)
 			) {
 				this.error(
-					`Expected only assets/app.js; found ${javascript.map((item) => item.fileName).join(", ")}`,
+					`assets/app.js is missing; found ${javascript.map((item) => item.fileName).join(", ")}`,
 				);
 			}
 			if (
-				stylesheets.length !== 1 ||
-				stylesheets[0]?.fileName !== "assets/app.css"
+				!stylesheets.some(
+					(chunk) => chunk.fileName === "assets/app.css",
+				)
 			) {
 				this.error(
-					`Expected only assets/app.css; found ${stylesheets.map((item) => item.fileName).join(", ")}`,
+					`assets/app.css is missing; found ${stylesheets.map((item) => item.fileName).join(", ")}`,
 				);
 			}
 

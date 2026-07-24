@@ -16,6 +16,8 @@
     setRelayVoiceMode,
     getRelaySendMode,
     setRelaySendMode,
+    getRelayVoiceModel,
+    setRelayVoiceModel,
   } from '$lib/config';
   import {
     interfaceSize,
@@ -460,6 +462,21 @@
             <option value="remote" selected={getRelayVoiceMode(relay.id) === 'remote'}>Remote (relay STT)</option>
           </select>
         </div>
+        {#if getRelayVoiceMode(relay.id) === 'local'}
+        <div class="choice-row">
+          <label class="choice-label" for="voice-model-{relay.id}">Model:</label>
+          <select
+            id="voice-model-{relay.id}"
+            class="voice-select"
+            onchange={(e) => setRelayVoiceModel(relay.id, (e.target as HTMLSelectElement).value as 'moonshine-tiny' | 'moonshine-base' | 'whisper-base' | 'whisper-small')}
+          >
+            <option value="moonshine-tiny" selected={getRelayVoiceModel(relay.id) === 'moonshine-tiny'}>Moonshine Tiny</option>
+            <option value="moonshine-base" selected={getRelayVoiceModel(relay.id) === 'moonshine-base'}>Moonshine Base</option>
+            <option value="whisper-base" selected={getRelayVoiceModel(relay.id) === 'whisper-base'}>Whisper Base</option>
+            <option value="whisper-small" selected={getRelayVoiceModel(relay.id) === 'whisper-small'}>Whisper Small</option>
+          </select>
+        </div>
+        {/if}
         <div class="choice-row">
           <label class="choice-label" for="send-mode-{relay.id}">After transcription:</label>
           <select

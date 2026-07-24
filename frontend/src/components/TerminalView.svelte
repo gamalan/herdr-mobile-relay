@@ -10,7 +10,7 @@
     sortedAgents,
   } from '$lib/agents';
   import { showAgentStatusLine } from '$lib/preferences';
-  import { getRelayVoiceMode, getRelaySendMode } from '$lib/config';
+  import { getRelayVoiceMode, getRelaySendMode, getRelayVoiceModel } from '$lib/config';
   import { replaceView } from '$lib/router';
   import { relayStore } from '$lib/store';
   import { startLocalTranscription } from '$lib/stt';
@@ -57,7 +57,8 @@
   let mediaRecorder = $state<MediaRecorder | null>(null);
   let audioChunks = $state<Blob[]>([]);
   let recordingStream = $state<MediaStream | null>(null);
-  let stopLocalTranscriptionFn = $state<(() => string) | null>(null);
+  type StopFn = () => string | Promise<string>;
+  let stopLocalTranscriptionFn = $state<StopFn | null>(null);
 
 
   const blocked = $derived(agentStatusGroup(agent) === 'blocked');
@@ -225,8 +226,9 @@
         relayStore.showToast(`Recording failed: ${message}`, true);
       }
     } else {
-      // Local mode: use Moonshine on-device transcription
-      stopLocalTranscriptionFn = await startLocalTranscription({
+      // Local mode: use on-device transcription with the selected model
+      const model = getRelayVoiceModel(relayId);
+      stopLocalTranscriptionFn = await startLocalTranscription(model, {
         onLoading() {
           relayStore.showToast('Loading speech model…');
         },
@@ -234,7 +236,7 @@
           relayStore.showToast('Speech model loaded. Recording…');
         },
         onChunk(text: string) {
-          // Incremental transcription: update composer with accumulated text
+          // Incremental transcription (Moonshine): update composer with accumulated text
           composer = text;
         },
         onError(message: string) {
@@ -290,16 +292,17 @@ ${text}` : text;
         recordingPending = false;
       }
     } else {
-      // Local mode: stop Moonshine transcription
+      // Local mode: stop on-device transcription
       recording = false;
       if (!stopLocalTranscriptionFn) {
         recordingPending = false;
         return;
       }
-      const text = stopLocalTranscriptionFn();
+      const fn = stopLocalTranscriptionFn;
       stopLocalTranscriptionFn = null;
       recordingPending = false;
 
+      const text = await Promise.resolve(fn());
       if (submit && text) {
         composer = text;
         if (sendMode === 'direct-send') {

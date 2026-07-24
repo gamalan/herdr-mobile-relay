@@ -2,9 +2,9 @@ import { readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { constants, gzipSync } from "node:zlib";
 
-// Moonshine on-device STT (onnxruntime-web + transformers.js) adds ~857 KiB gzip.
-// The model weights are fetched separately from HuggingFace on first use.
-const limit = 950_000;
+// Initial payload: app.js (entry), app.css, index.html, notification-icons.js.
+// Code-split chunks (moonshine, transformers, ort-wasm) are lazily loaded on demand.
+const limit = 163_840;
 const root = resolve(process.argv[2] || "dist");
 const files = [
 	"index.html",

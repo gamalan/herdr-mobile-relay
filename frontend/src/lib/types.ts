@@ -2,6 +2,7 @@ export type RelayStatus = "connecting" | "connected" | "disconnected";
 
 export type VoiceMode = "local" | "remote";
 export type SendMode = "edit-then-send" | "direct-send";
+export type VoiceModel = "moonshine-tiny" | "moonshine-base" | "whisper-base" | "whisper-small";
 
 export interface RelayConfig {
 	id: string;
@@ -9,6 +10,7 @@ export interface RelayConfig {
 	url: string;
 	token: string;
 	voice_mode?: VoiceMode;
+	voice_model?: VoiceModel;
 	send_mode?: SendMode;
 }
 

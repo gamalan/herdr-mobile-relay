@@ -1,4 +1,4 @@
-import type { RelayConfig, VoiceMode, SendMode } from "./types";
+import type { RelayConfig, VoiceMode, SendMode, VoiceModel } from "./types";
 
 export const RELAYS_KEY = "herdr_relays";
 export const THEME_KEY = "herdr_theme";
@@ -18,6 +18,7 @@ export const HANDLED_NOTIFICATION_ACTIONS_KEY =
 	"herdr_handled_notification_actions";
 export const VOICE_MODE_KEY_PREFIX = "herdr_voice_mode_";
 export const SEND_MODE_KEY_PREFIX = "herdr_send_mode_";
+export const VOICE_MODEL_KEY_PREFIX = "herdr_voice_model_";
 
 export const APP_PROTOCOL_VERSION = __APP_PROTOCOL_VERSION__;
 export const APP_VERSION = __APP_VERSION__;
@@ -73,6 +74,29 @@ export function setRelaySendMode(
 	storage.setItem(`${SEND_MODE_KEY_PREFIX}${relayId}`, mode);
 }
 
+export function getRelayVoiceModel(
+	relayId: string,
+	storage: Storage = localStorage,
+): VoiceModel {
+	const stored = storage.getItem(`${VOICE_MODEL_KEY_PREFIX}${relayId}`);
+	if (
+		stored === "moonshine-tiny" ||
+		stored === "moonshine-base" ||
+		stored === "whisper-base" ||
+		stored === "whisper-small"
+	)
+		return stored;
+	return "moonshine-tiny";
+}
+
+export function setRelayVoiceModel(
+	relayId: string,
+	model: VoiceModel,
+	storage: Storage = localStorage,
+): void {
+	storage.setItem(`${VOICE_MODEL_KEY_PREFIX}${relayId}`, model);
+}
+
 export function relayLabelFromUrl(url: string): string {
 	try {
 		return new URL(url).hostname.split(".")[0] || "relay";
@@ -101,6 +125,7 @@ export function normalizeRelayConfig(relay: Partial<RelayConfig>): RelayConfig {
 		url,
 		token: relay.token || "",
 		voice_mode: relay.voice_mode,
+		voice_model: relay.voice_model,
 		send_mode: relay.send_mode,
 	};
 }

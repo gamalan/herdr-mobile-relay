@@ -43,11 +43,11 @@ for (const relative of compressedAssets) {
 const assets = await readdir(join(root, 'assets'));
 const scripts = assets.filter((name) => name.endsWith('.js'));
 const styles = assets.filter((name) => name.endsWith('.css'));
-if (scripts.length !== 1 || scripts[0] !== 'app.js') {
-  throw new Error(`Expected only assets/app.js; found ${scripts.join(', ')}`);
+if (!scripts.includes('app.js')) {
+  throw new Error(`assets/app.js is missing; found ${scripts.join(', ')}`);
 }
-if (styles.length !== 1 || styles[0] !== 'app.css') {
-  throw new Error(`Expected only assets/app.css; found ${styles.join(', ')}`);
+if (!styles.includes('app.css')) {
+  throw new Error(`assets/app.css is missing; found ${styles.join(', ')}`);
 }
 
 const html = await readFile(join(root, 'index.html'), 'utf8');
