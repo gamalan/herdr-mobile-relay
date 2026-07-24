@@ -9,7 +9,7 @@ WRANGLER_VERSION ?= 4.112.0
 PATH := /opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$(HOME)/.local/bin:$(PATH)
 export PATH
 
-.PHONY: help setup setup-link app-deploy-setup rotate-token quick-start dev-tunnel stable-setup stable-teardown check backend-check frontend-check frontend-browser frontend-browser-release test relay-run relay-plugin service-install service-uninstall service-status service-logs macos-service-install macos-service-uninstall macos-service-status macos-service-logs linux-service-install linux-service-uninstall linux-service-status linux-service-logs web-bundle-check web-release web-release-check web-deploy web-preview
+.PHONY: help setup setup-link app-deploy-setup rotate-token quick-start dev-tunnel stable-setup stable-teardown check backend-check frontend-check frontend-browser frontend-browser-release test relay-run relay-plugin service-install service-uninstall service-restart service-status service-logs macos-service-install macos-service-uninstall macos-service-status macos-service-logs linux-service-install linux-service-uninstall linux-service-restart linux-service-status linux-service-logs web-bundle-check web-release web-release-check web-deploy web-preview
 
 help:
 	@echo "Common targets:"
@@ -103,6 +103,9 @@ service-status:
 service-logs:
 	relay/service.sh logs
 
+service-restart:
+	relay/service.sh restart
+
 macos-service-install:
 	relay/install-service.sh
 
@@ -126,6 +129,9 @@ linux-service-status:
 
 linux-service-logs:
 	journalctl --user -u herdr-mobile-relay.service -f
+
+linux-service-restart:
+	systemctl --user restart herdr-mobile-relay.service
 
 web-bundle-check:
 	node frontend/scripts/validate-build.mjs web
