@@ -6,7 +6,7 @@
  * - remote: sends audio to the relay's configured STT endpoint
  */
 
-import { MicrophoneTranscriber } from "@moonshine-ai/moonshine-js";
+import { MicrophoneTranscriber, Settings } from "@moonshine-ai/moonshine-js";
 import type { TranscriberCallbacks } from "@moonshine-ai/moonshine-js";
 
 // Cache the transcriber instance so the model loads only once.
@@ -33,8 +33,12 @@ export async function loadLocalModel(): Promise<void> {
 	if (loadPromise) return loadPromise;
 
 	loadPromise = (async () => {
+		// Point to the English Base model on HuggingFace.
+		// Files: onnx/merged/base/quantized/encoder_model.onnx + decoder_model_merged.onnx
+		Settings.BASE_ASSET_PATH.MOONSHINE =
+			"https://huggingface.co/UsefulSensors/moonshine/resolve/main/onnx/merged/base/";
 		const instance = new MicrophoneTranscriber(
-			"model/tiny",
+			"",
 			{},
 			true, // useVAD = true gives us soft 10s chunks
 			"quantized",

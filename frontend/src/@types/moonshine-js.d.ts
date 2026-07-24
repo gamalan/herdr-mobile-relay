@@ -1,4 +1,20 @@
 declare module "@moonshine-ai/moonshine-js" {
+	export const Settings: {
+		BASE_ASSET_PATH: {
+			MOONSHINE: string;
+			ONNX_RUNTIME: string;
+			SILERO_VAD: string;
+		};
+		FRAME_SIZE: number;
+		STREAM_UPDATE_INTERVAL: number;
+		STREAM_COMMIT_MIN_INTERVAL: number;
+		STREAM_COMMIT_MAX_INTERVAL: number;
+		STREAM_COMMIT_EMA_THRESHOLD: number;
+		STREAM_COMMIT_EMA_PERIOD: number;
+		VAD_COMMIT_INTERVAL: number;
+		VERBOSE_LOGGING: boolean;
+	};
+
 	export interface TranscriberCallbacks {
 		onError: (error: unknown) => void;
 		onModelLoaded: () => void;
