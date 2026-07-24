@@ -1,32 +1,43 @@
-import { readFile } from 'node:fs/promises';
-import { resolve, join } from 'node:path';
-import { constants, gzipSync } from 'node:zlib';
+import { readFile } from "node:fs/promises";
+import { resolve, join } from "node:path";
+import { constants, gzipSync } from "node:zlib";
 
 // Moonshine on-device STT (onnxruntime-web + transformers.js) adds ~857 KiB gzip.
 // The model weights are fetched separately from HuggingFace on first use.
 const limit = 950_000;
-const root = resolve(process.argv[2] || 'dist');
-const files = ['index.html', 'assets/app.js', 'assets/app.css', 'notification-icons.js'];
+const root = resolve(process.argv[2] || "dist");
+const files = [
+	"index.html",
+	"assets/app.js",
+	"assets/app.css",
+	"notification-icons.js",
+];
 let totalRaw = 0;
 let totalGzip = 0;
 let totalBrotli = 0;
 
-console.log('Initial payload budget:');
+console.log("Initial payload budget:");
 for (const relative of files) {
-  const source = await readFile(join(root, relative));
-  const brotli = await readFile(join(root, `${relative}.br`));
-  const gzip = gzipSync(source, {
-    level: 9,
-    memLevel: 8,
-    strategy: constants.Z_DEFAULT_STRATEGY,
-    windowBits: 15,
-  });
-  totalRaw += source.length;
-  totalGzip += gzip.length;
-  totalBrotli += brotli.length;
-  console.log(`${relative.padEnd(28)} raw ${String(source.length).padStart(8)} B  gzip ${String(gzip.length).padStart(7)} B  br ${String(brotli.length).padStart(7)} B`);
+	const source = await readFile(join(root, relative));
+	const brotli = await readFile(join(root, `${relative}.br`));
+	const gzip = gzipSync(source, {
+		level: 9,
+		memLevel: 8,
+		strategy: constants.Z_DEFAULT_STRATEGY,
+		windowBits: 15,
+	});
+	totalRaw += source.length;
+	totalGzip += gzip.length;
+	totalBrotli += brotli.length;
+	console.log(
+		`${relative.padEnd(28)} raw ${String(source.length).padStart(8)} B  gzip ${String(gzip.length).padStart(7)} B  br ${String(brotli.length).padStart(7)} B`,
+	);
 }
-console.log(`${'TOTAL'.padEnd(28)} raw ${String(totalRaw).padStart(8)} B  gzip ${String(totalGzip).padStart(7)} B / ${limit} B  br ${String(totalBrotli).padStart(7)} B`);
+console.log(
+	`${"TOTAL".padEnd(28)} raw ${String(totalRaw).padStart(8)} B  gzip ${String(totalGzip).padStart(7)} B / ${limit} B  br ${String(totalBrotli).padStart(7)} B`,
+);
 if (totalGzip > limit) {
-  throw new Error(`Initial payload exceeds the 80 KiB gzip ceiling by ${totalGzip - limit} bytes`);
+	throw new Error(
+		`Initial payload exceeds the 80 KiB gzip ceiling by ${totalGzip - limit} bytes`,
+	);
 }

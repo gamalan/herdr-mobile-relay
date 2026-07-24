@@ -14,14 +14,14 @@ let cachedTranscriber: MicrophoneTranscriber | null = null;
 let loadPromise: Promise<void> | null = null;
 
 export interface SttCallbacks {
-  /** Called when a chunk of transcription is ready (incremental). */
-  onChunk: (text: string) => void;
-  /** Called when the model starts loading. */
-  onLoading: () => void;
-  /** Called when the model is loaded. */
-  onReady: () => void;
-  /** Called on error. */
-  onError: (message: string) => void;
+	/** Called when a chunk of transcription is ready (incremental). */
+	onChunk: (text: string) => void;
+	/** Called when the model starts loading. */
+	onLoading: () => void;
+	/** Called when the model is loaded. */
+	onReady: () => void;
+	/** Called on error. */
+	onError: (message: string) => void;
 }
 
 /**
@@ -29,27 +29,27 @@ export interface SttCallbacks {
  * Resolves when the model is ready for transcription.
  */
 export async function loadLocalModel(): Promise<void> {
-  if (cachedTranscriber?.isActive) return;
-  if (loadPromise) return loadPromise;
+	if (cachedTranscriber?.isActive) return;
+	if (loadPromise) return loadPromise;
 
-  loadPromise = (async () => {
-    const instance = new MicrophoneTranscriber(
-      "model/tiny",
-      {},
-      true, // useVAD = true gives us soft 10s chunks
-      "quantized",
-    );
-    await instance.load();
-    cachedTranscriber = instance;
-  })();
+	loadPromise = (async () => {
+		const instance = new MicrophoneTranscriber(
+			"model/tiny",
+			{},
+			true, // useVAD = true gives us soft 10s chunks
+			"quantized",
+		);
+		await instance.load();
+		cachedTranscriber = instance;
+	})();
 
-  try {
-    await loadPromise;
-  } catch (error) {
-    loadPromise = null;
-    cachedTranscriber = null;
-    throw error;
-  }
+	try {
+		await loadPromise;
+	} catch (error) {
+		loadPromise = null;
+		cachedTranscriber = null;
+		throw error;
+	}
 }
 
 /**
@@ -60,63 +60,69 @@ export async function loadLocalModel(): Promise<void> {
  * @returns A function to stop recording and get the full accumulated text
  */
 export async function startLocalTranscription(
-  callbacks: SttCallbacks,
+	callbacks: SttCallbacks,
 ): Promise<() => string> {
-  callbacks.onLoading();
-  try {
-    await loadLocalModel();
-  } catch (error) {
-    callbacks.onError(
-      `Failed to load speech model: ${error instanceof Error ? error.message : 'Unknown error'}`,
-    );
-    return () => '';
-  }
-  callbacks.onReady();
+	callbacks.onLoading();
+	try {
+		await loadLocalModel();
+	} catch (error) {
+		callbacks.onError(
+			`Failed to load speech model: ${error instanceof Error ? error.message : "Unknown error"}`,
+		);
+		return () => "";
+	}
+	callbacks.onReady();
 
-  if (!cachedTranscriber) {
-    callbacks.onError('Speech model not available');
-    return () => '';
-  }
+	if (!cachedTranscriber) {
+		callbacks.onError("Speech model not available");
+		return () => "";
+	}
 
-  let accumulatedText = '';
+	let accumulatedText = "";
 
-  const sessionCallbacks: Partial<TranscriberCallbacks> = {
-    onTranscriptionCommitted(text: string) {
-      if (!text) return;
-      accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
-      callbacks.onChunk(accumulatedText);
-    },
-    onError(error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      callbacks.onError(msg);
-    },
-  };
+	const sessionCallbacks: Partial<TranscriberCallbacks> = {
+		onTranscriptionCommitted(text: string) {
+			if (!text) return;
+			accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
+			callbacks.onChunk(accumulatedText);
+		},
+		onError(error: unknown) {
+			const msg = error instanceof Error ? error.message : String(error);
+			callbacks.onError(msg);
+		},
+	};
 
-  cachedTranscriber.callbacks = sessionCallbacks;
+	// Merge session callbacks into the existing defaults so that
+	// any callback we don't override (e.g. onTranscribeStopped) still
+	// has a no-op rather than throwing.
+	cachedTranscriber.callbacks = {
+		...cachedTranscriber.callbacks,
+		...sessionCallbacks,
+	};
 
-  try {
-    await cachedTranscriber.start();
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    callbacks.onError(`Failed to start recording: ${msg}`);
-    return () => accumulatedText;
-  }
+	try {
+		await cachedTranscriber.start();
+	} catch (error) {
+		const msg = error instanceof Error ? error.message : String(error);
+		callbacks.onError(`Failed to start recording: ${msg}`);
+		return () => accumulatedText;
+	}
 
-  return () => {
-    try {
-      if (cachedTranscriber?.isActive) {
-        cachedTranscriber.stop();
-      }
-    } catch {
-      // Ignore stop errors
-    }
-    return accumulatedText;
-  };
+	return () => {
+		try {
+			if (cachedTranscriber?.isActive) {
+				cachedTranscriber.stop();
+			}
+		} catch {
+			// Ignore stop errors
+		}
+		return accumulatedText;
+	};
 }
 
 /**
  * Check if the Moonshine model has been loaded and cached.
  */
 export function isModelLoaded(): boolean {
-  return cachedTranscriber !== null && cachedTranscriber.isLoaded;
+	return cachedTranscriber !== null && cachedTranscriber.isLoaded;
 }
