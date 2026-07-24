@@ -34,7 +34,7 @@ export async function loadLocalModel(): Promise<void> {
 
 	loadPromise = (async () => {
 		const instance = new MicrophoneTranscriber(
-			"model/base-es-non-commercial",
+			"model/tiny",
 			{},
 			true, // useVAD = true gives us soft 10s chunks
 			"quantized",
